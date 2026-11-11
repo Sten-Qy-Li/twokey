@@ -340,3 +340,10 @@ func resultOf(r *state.Round, name string) string {
 	}
 	return ""
 }
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return strconv.Itoa(n) + " " + word + "s"
+}

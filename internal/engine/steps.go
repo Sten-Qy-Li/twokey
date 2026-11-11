@@ -173,7 +173,7 @@ func (e *engine) runAgent(ctx context.Context, r *state.Round, s *state.Step, st
 	req := runner.Request{Agent: s.Agent, Name: s.Name, Step: step, Round: r.N, Prompt: prompt,
 		RepoDir: e.o.Root, ScratchDir: scratch, Commit: r.Commit, Resume: resume}
 
-	var probs []string
+	var probs, all []string
 	for try := 1; try <= 2; try++ {
 		e.update(func() {
 			s.Status, s.Error = state.Active, ""
@@ -213,14 +213,17 @@ func (e *engine) runAgent(ctx context.Context, r *state.Round, s *state.Step, st
 			}
 			return res.Answer, ""
 		}
+		for _, p := range probs {
+			all = append(all, fmt.Sprintf("attempt %d: %s", req.Attempt, p))
+		}
 		if s.SessionID == "" {
 			break // nothing to resume
 		}
 		req.Resume = s.SessionID
 		req.Prompt = retryPrompt(probs)
 	}
-	e.update(func() { s.Status, s.Error = state.Failed, strings.Join(probs, "; ") })
-	return nil, strings.Join(probs, "\n")
+	e.update(func() { s.Status, s.Error = state.Failed, strings.Join(all, "; ") })
+	return nil, strings.Join(all, "\n")
 }
 
 func retryPrompt(probs []string) string {
@@ -426,7 +429,8 @@ func (e *engine) convergence(ctx context.Context, r *state.Round) bool {
 		return false
 	}
 	g := e.decide(r)
-	text := fmt.Sprintf("convergence (%s): %s\n%s\nGate: %s %s", c.Verdict, c.Summary, mergedTable(c.Findings), g.Action, strings.Join(g.IDs, ", "))
+	text := fmt.Sprintf("convergence (%s): %s\n%s\nGate: %s", c.Verdict, c.Summary, mergedTable(c.Findings),
+		strings.TrimSpace(string(g.Action)+" "+strings.Join(g.IDs, ", ")))
 	if !e.o.UI.After(text) {
 		return e.quit()
 	}
@@ -639,7 +643,7 @@ func (e *engine) runFix(ctx context.Context, r *state.Round, s *state.Step, ids 
 	for _, n := range f.NotDone {
 		lines = append(lines, "  not done: "+n.ID+": "+n.Reason)
 	}
-	text := fmt.Sprintf("fix: %d commits\n%s\nNext: verify", len(f.Commits), strings.Join(lines, "\n"))
+	text := fmt.Sprintf("fix: %s\n%s\nNext: verify", plural(len(f.Commits), "commit"), strings.Join(lines, "\n"))
 	if !e.o.UI.After(text) {
 		return e.quit()
 	}
@@ -769,7 +773,7 @@ func (e *engine) push(ctx context.Context, r *state.Round) bool {
 	_ = os.WriteFile(filepath.Join(e.roundDir(r), "push.log"),
 		[]byte(fmt.Sprintf("Pushed %s to %s/%s:\n%s\n", short(head), remote, branch, strings.Join(lines, "\n"))), 0o644)
 	e.update(func() { r.Pushed = true })
-	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Pushed %d commits to %s/%s.", len(commits), remote, branch))
+	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Pushed %s to %s/%s.", plural(len(commits), "commit"), remote, branch))
 	return true
 }
 

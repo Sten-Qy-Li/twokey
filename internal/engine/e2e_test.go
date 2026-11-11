@@ -258,7 +258,7 @@ func TestFixThenConverge(t *testing.T) {
 	if !strings.Contains(string(r2), "Round 1, fix: log entry \"Claude Code - Claude Opus 5.5 — ") {
 		t.Errorf("round 2's history lacks round 1's fix:\n%s", r2)
 	}
-	w.outHas("Pushed 1 commits to origin/feature.")
+	w.outHas("Pushed 1 commit to origin/feature.")
 }
 
 func TestDisputeWithdrawn(t *testing.T) {
