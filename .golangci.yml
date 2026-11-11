@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - noctx
+    - unconvert
+  settings:
+    gosec:
+      excludes:
+        # twokey's job is to run the user's tools (git, the agent CLIs,
+        # docker) and to read and write files in the user's project, so
+        # these patterns are expected and were reviewed:
+        - G204 # subprocesses with variable arguments
+        - G301 # 0755 folders (run folder, staging, scratch)
+        - G304 # file paths from variables (config, log, requirements)
+        - G306 # 0644 for files the user reads (config, log, reports)
+  exclusions:
+    presets:
+      # Unchecked errors from printing to the terminal (fmt.Fprint*) and
+      # similar calls: nothing useful can be done about them.
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Sten-Qy-Li/twokey

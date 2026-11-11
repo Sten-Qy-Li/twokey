@@ -1,2 +1,8 @@
 # The build brief stays local (it holds personal project details).
 TWOKEY_BRIEF.md
+
+# Local builds and test output.
+/bin/
+/dist/
+*.test
+*.out

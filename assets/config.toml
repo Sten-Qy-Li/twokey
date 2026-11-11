@@ -1,0 +1,65 @@
+# twokey configuration for one project.
+# Keep this file in the project's root, and make sure git ignores it.
+# Every setting is explained in docs/SPEC.md, section 11.
+
+[project]
+branch = "my-branch"                        # the branch twokey audits, fixes and pushes
+remote = "origin"
+protected_branches = ["main"]               # twokey checks that these never change
+log_file = "local-only_logs.md"
+log_marker = "<!-- NEW LOGS GO DIRECTLY BELOW THIS LINE -->"
+run_dir = "local-only_twokey"               # inside the repo, must be git-ignored
+extra_read_dirs = []                        # absolute paths the agents may read, e.g. a slides folder
+
+[checkpoint]
+label = "Checkpoint 3"
+requirements_file = "local-only_checkpoint-3-instructions.md"
+
+[loop]
+mode = "stepper"                            # or "autopilot"
+max_rounds = 4
+fix_p3 = false
+
+[verify]
+commands = ["npm run lint", "npm run format:check", "npm run typecheck", "npm test", "npm run build"]
+
+[codex]
+command = "codex"
+label_prefix = "Codex"                      # log heading: "<label_prefix> - <model name>"
+label = "Codex - GPT-6.1-Sol"               # log heading when Codex doesn't report its model
+model = ""                                  # "" = the CLI's default
+sandbox = "workspace-write"                 # see the doctor --smoke result
+network = true
+desktop_tools = false                       # true = allow screen and real-browser control
+extra_args = []
+ports = "56000-56499"
+
+[claude]
+command = "claude"
+label_prefix = "Claude Code"
+label = "Claude Code - Claude Opus 5.5"
+model = ""
+permission_mode = "auto"
+desktop_tools = false
+max_budget_usd = 0                          # 0 = no limit
+extra_args = []
+ports = "56500-56999"
+
+[model_names]                               # model ID = name used in log headings
+"gpt-6.1-sol" = "GPT-6.1-Sol"
+"claude-opus-5-5" = "Claude Opus 5.5"
+
+[timeouts]                                  # minutes
+audit = 90
+convergence = 75
+dispute = 30
+fix = 120
+verify = 20
+
+[limits]
+max_wait_hours = 5
+usage_limit_patterns = ["usage limit", "rate limit", "try again"]
+
+[notify]
+toast = true
+ntfy_topic = ""                             # "" = off (phone push arrives in v0.2)
