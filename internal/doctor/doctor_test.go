@@ -118,6 +118,7 @@ func TestHealthyProject(t *testing.T) {
 		"[OK]    Codex CLI codex-cli 0.165.0",
 		"[OK]    codex exec has every option twokey uses",
 		"[OK]    codex exec resume has every option twokey uses",
+		"[OK]    Claude Code 2.1.311 (/fake/claude)",
 		"[OK]    claude has every option twokey uses",
 		`[OK]    Claude permission mode "auto" is supported`,
 		"[OK]    On branch feature",

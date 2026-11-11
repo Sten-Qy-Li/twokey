@@ -273,6 +273,8 @@ func (d *doctor) findCLI(name, command, key string) (string, bool) {
 		d.fail(fmt.Sprintf("%s doesn't run: %s", name, path))
 		return "", false
 	}
+	// claude --version prints "2.1.311 (Claude Code)"; don't name it twice.
+	v = strings.TrimSuffix(v, " ("+name+")")
 	d.ok(fmt.Sprintf("%s %s (%s)", name, v, path))
 	return path, true
 }
