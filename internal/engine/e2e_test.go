@@ -529,3 +529,20 @@ func TestPreflightAndLock(t *testing.T) {
 	w.expect(w.start(""), engine.ExitError)
 	w.outHas("is running run other in this repository")
 }
+
+func TestStepperEditsThePrompt(t *testing.T) {
+	w := newWorld(t)
+	w.stepper = true
+	w.cleanRound(1)
+	o := w.opts("e\n\n\n\n\n\n", 0) // edit, Enter after each of 2 edits, then Enter at each stop
+	o.Editor = "git --version"      // a harmless stand-in that exits at once
+	w.expect(engine.Start(t.Context(), o), engine.ExitDone)
+	s := w.state().Rounds[0].Step(state.CodexAudit)
+	if !strings.HasSuffix(s.Prompt, "codex-audit.prompt.edited.md") {
+		t.Errorf("the edited prompt was not used: %s", s.Prompt)
+	}
+	if _, err := os.Stat(filepath.Join(w.runDir(), "r1", "codex-audit.prompt.md")); err != nil {
+		t.Error("the rendered prompt must stay next to the edited one")
+	}
+	w.outHas("Save and close")
+}
