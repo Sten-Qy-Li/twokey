@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["base_commit", "commits", "done", "not_done", "log_entry_markdown"],
+  "properties": {
+    "base_commit": {"type": "string"},
+    "commits": {"type": "array", "items": {"type": "string"}},
+    "done": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "change", "verified_how"],
+        "properties": {
+          "id": {"type": "string"},
+          "change": {"type": "string"},
+          "verified_how": {"type": "string"}
+        }
+      }
+    },
+    "not_done": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason"],
+        "properties": {
+          "id": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "log_entry_markdown": {"type": "string"}
+  }
+}

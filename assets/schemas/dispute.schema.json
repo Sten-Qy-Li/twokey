@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rechecks", "log_entry_markdown"],
+  "properties": {
+    "rechecks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "decision", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "decision": {"type": "string", "enum": ["withdraw", "maintain"]},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "log_entry_markdown": {"type": "string"}
+  }
+}
