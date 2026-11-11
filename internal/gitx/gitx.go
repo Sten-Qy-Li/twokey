@@ -166,6 +166,91 @@ func (g Repo) IsIgnored(ctx context.Context, path string) (bool, error) {
 	return false, nil
 }
 
+// Refs returns "git for-each-ref" output: one "refname sha" line per
+// branch, tag and stash ref. Remote-tracking refs are left out: an agent's
+// harmless "git fetch" changes them, and pushes are caught on the remote
+// itself (DECISIONS.md D29).
+func (g Repo) Refs(ctx context.Context) (string, error) {
+	out, err := g.Output(ctx, "for-each-ref", "--format=%(refname) %(objectname)")
+	if err != nil {
+		return "", err
+	}
+	var keep []string
+	for _, line := range strings.Split(out, "\n") {
+		if line != "" && !strings.HasPrefix(line, "refs/remotes/") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n"), nil
+}
+
+// IsAncestor reports whether commit a is an ancestor of (or equal to) b.
+func (g Repo) IsAncestor(ctx context.Context, a, b string) (bool, error) {
+	args := []string{"merge-base", "--is-ancestor", a, b}
+	r := g.run(ctx, args...)
+	switch {
+	case r.Err == nil:
+		return true, nil
+	case r.ExitCode == 1:
+		return false, nil
+	default:
+		return false, &Error{Args: args, ExitCode: r.ExitCode, Stderr: r.Stderr, Err: r.Err}
+	}
+}
+
+// CommitExists reports whether sha names a commit in the repository.
+func (g Repo) CommitExists(ctx context.Context, sha string) bool {
+	return g.run(ctx, "cat-file", "-e", sha+"^{commit}").Err == nil
+}
+
+// NewCommits lists the commits in head but not in base, oldest first.
+func (g Repo) NewCommits(ctx context.Context, base, head string) ([]string, error) {
+	out, err := g.Output(ctx, "rev-list", "--reverse", base+".."+head)
+	if err != nil || out == "" {
+		return nil, err
+	}
+	return strings.Split(out, "\n"), nil
+}
+
+// Subject returns a commit's subject line.
+func (g Repo) Subject(ctx context.Context, sha string) (string, error) {
+	return g.Output(ctx, "log", "-1", "--format=%s", sha)
+}
+
+// Push pushes HEAD to one branch of the remote: no force, no push options.
+func (g Repo) Push(ctx context.Context, remote, branch string) error {
+	_, err := g.Output(ctx, "push", "--porcelain", remote, "HEAD:refs/heads/"+branch)
+	return err
+}
+
+// LsRemoteBranches asks the remote for several branches at once. A branch
+// the remote doesn't have maps to "".
+func (g Repo) LsRemoteBranches(ctx context.Context, remote string, branches []string) (map[string]string, error) {
+	args := []string{"ls-remote", "--heads", remote}
+	for _, b := range branches {
+		args = append(args, "refs/heads/"+b)
+	}
+	out, err := g.Output(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	shas := map[string]string{}
+	for _, b := range branches {
+		shas[b] = ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 {
+			if b, ok := strings.CutPrefix(f[1], "refs/heads/"); ok {
+				if _, want := shas[b]; want {
+					shas[b] = f[0]
+				}
+			}
+		}
+	}
+	return shas, nil
+}
+
 func firstLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
