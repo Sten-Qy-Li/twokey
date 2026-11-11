@@ -20,6 +20,7 @@ linters:
         - G301 # 0755 folders (run folder, staging, scratch)
         - G304 # file paths from variables (config, log, requirements)
         - G306 # 0644 for files the user reads (config, log, reports)
+        - G702 # the same subprocesses as G204, found by taint analysis
         - G703 # the same paths as G304, found by taint analysis
   exclusions:
     presets:

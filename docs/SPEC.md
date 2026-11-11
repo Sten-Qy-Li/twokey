@@ -185,7 +185,8 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 
 **After every agent step** (any kind, including after a timeout, a kill or a crash found on resume):
 - Remove the Docker resources with that step's prefix (section 9, "Scratch, containers and ports"). This runs before the other checks.
-- `git ls-remote` for the branch and the protected branches must match the snapshot, so an agent that pushed by itself is caught at once (`PAUSE_INVARIANT`; D20).
+- `git ls-remote` for the branch and the protected branches must match the snapshot, so an agent that pushed by itself is caught at once (`PAUSE_INVARIANT`; D20). If the working branch moved on the remote to a commit that isn't in local history, someone else pushed: twokey warns and leaves it to the push step (`PAUSE_REMOTE_MOVED`; D30).
+- `state.json` must still be what twokey last wrote (D33).
 
 **Preflight (before round 1)**
 - The repo is on `branch`; `git status --porcelain` is empty.
@@ -197,7 +198,7 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 **After `audit`, `convergence` and `dispute` steps (no repo changes allowed)**
 - `HEAD` and the current branch are unchanged.
 - `git status --porcelain` is identical to the snapshot. Ignored files may change.
-- The `git for-each-ref` output is identical, so there are no new branches, tags or stash entries.
+- The `git for-each-ref` output is identical, so there are no new branches, tags or stash entries. Remote-tracking refs are left out: an agent's `git fetch` is harmless, and pushes are caught on the remote (D29).
 - The log file hash is unchanged.
 - twokey's own files in the run folder are unchanged (keep a manifest of hashes).
 
@@ -274,13 +275,14 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - `PAUSE_DECISION`, `PAUSE_ADJUDICATE`, `PAUSE_RECURRING`
 - `PAUSE_INVARIANT`, `PAUSE_VERIFY_FAILED`, `PAUSE_NO_PROGRESS`, `PAUSE_REMOTE_MOVED`
 - `PAUSE_AGENT_FAILED` (after one retry)
+- `PAUSE_PUSH_FAILED` (`git fetch` or `git push` failed), `PAUSE_INTERRUPTED` (a fix step was interrupted and left changes) (D32)
 - `PAUSE_USAGE_LIMIT` (when waiting isn't possible, see below)
 - `PAUSE_TIMEOUT` (fix step only; audit-type steps get one retry first)
 
 **On a pause:**
 1. Write `pending.md` in the run folder: what happened, what twokey needs, and the exact command or keys to continue.
 2. Send a notification.
-3. Wait at the terminal prompt. The owner can answer there, or quit (Ctrl+C) and run `twokey resume` later.
+3. Wait at the terminal prompt. The owner can answer there, or quit (Ctrl+C) and run `twokey resume` later. This holds in both modes: autopilot doesn't wait between steps, but it does ask for decisions and rulings. Without input (end of file), the run pauses (D34).
 
 **Decisions** (`PAUSE_DECISION`):
 - For each finding, show title, evidence, options and the recommendation. The owner picks an option number, types their own text, or picks `drop` (not needed). `drop` resolves the finding (section 4, case c), so it isn't sent to the fix step.
@@ -308,7 +310,8 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 **Resume:** `state.json` records every step with its status, attempt count, session or thread ID, paths and timestamps. Write it atomically after every change.
 - `twokey resume` picks up from the last finished step.
 - A step left `running` (because of a crash or Ctrl+C) first gets its Docker cleanup. Then it reruns if it's an audit, convergence or dispute step.
-- A `fix` left `running` pauses with the current `git status`; twokey never discards the owner's tree.
+- A `fix` left `running` pauses with the current `git status`; twokey never discards the owner's tree. If the tree is clean and HEAD is still the round's commit, the fix simply runs again.
+- After a pause, resume first resolves its reason (D32): a failed agent step runs again; a failed check runs the checks again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues only once the remote branch is part of local history (the owner merged or rebased by hand); `PAUSE_INVARIANT` continues once the tree is clean (the owner looked and undid what was wrong).
 
 ---
 
@@ -403,8 +406,8 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 |---|---|
 | `twokey init` | Creates the config template and checks `.gitignore`. |
 | `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one tiny schema-constrained call to each agent; it tests Codex's configured sandbox (scratch write plus one network request), a resume of each session, that each agent can read a file in each extra read folder, and the arguments that turn off screen and browser control. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
-| `twokey run [--autopilot] [--max-rounds N]` | Starts a run. Refuses if preflight fails. |
-| `twokey resume [--run ID] [--more-rounds N]` | Continues the latest (or given) run. |
+| `twokey run [--autopilot] [--max-rounds N]` | Starts a run. Refuses if preflight fails. `--fake-agents <folder>` plays scripted answers instead of calling the CLIs (tests; until M2 it is required). |
+| `twokey resume [--run ID] [--more-rounds N]` | Continues the latest (or given) run. Takes `--autopilot` and `--fake-agents` like `run`. |
 | `twokey status` | One screen: run, round, step, elapsed time, last gate result. |
 | `twokey render <step> [--round N]` | Renders a prompt without running it, for tuning templates. |
 | `twokey report [--run ID]` | Rebuilds `report.md`. |
@@ -418,6 +421,8 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 **Autopilot:** no prompts, except the pauses in section 10. Show the heartbeat, a one-line result per step, and the gate result per round.
 
 Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
+
+**Exit codes** of `run` and `resume` (D31): 0 = converged, or the owner stopped the run to resume later; 1 = preflight failed or something broke; 2 = wrong command line; 3 = paused, waiting for the owner; 4 = stopped after the last round with findings left.
 
 ---
 
@@ -592,7 +597,7 @@ ${p3_rule}
   - the log heading label: reported model with and without a `[model_names]` entry, no reported model, and the mismatch flag;
   - Docker cleanup with a fake `docker`: only names with the step's prefix are removed, also when another name merely contains the prefix.
 - Tests never read or write the developer's real home, git config or projects: they use `t.TempDir()` and `t.Setenv` (including `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`).
-- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent pushing by itself (expect `PAUSE_INVARIANT`).
+- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. The scenario format is described in `internal/runner/fake.go`: per round, `<step>.json` answers (with `${commit}` and `${new_commits}`), `<step>.<attempt>.json` for a resumed retry, and `<step>.actions.json` for what the fake agent does first: write files, commit, append to a file, push, or let a teammate push (D37). End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent pushing by itself (expect `PAUSE_INVARIANT`).
 - **CI:** GitHub Actions on `windows-latest` and `ubuntu-latest`, running `go vet` and `go test` (plus `go test -race` on Linux), `golangci-lint`, `govulncheck` and a `go mod tidy` check. Actions are pinned to full commit SHAs and tool versions are pinned; new versions must be at least 7 days old (D2). No real agent calls in CI, ever.
 - **Smoke test on the owner's machine:** `twokey doctor --smoke`, with their OK.
 

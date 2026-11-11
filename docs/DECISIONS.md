@@ -98,4 +98,34 @@ Staging: `os.UserCacheDir()/twokey/staging` (`%LOCALAPPDATA%\twokey\staging` on 
 `go:embed` can't reach parent folders, so `assets.go` (package `twokey`, at the module root) embeds `assets/`. The same layout as kube-onramp's D6: contributors find the config template, and later the prompt templates and schemas, in one place.
 
 ## D28. Lint: `std-error-handling` instead of `_, _ =`
-twokey prints to an `io.Writer` in many places. golangci-lint's `std-error-handling` exclusion covers unchecked `fmt.Fprint*` results, so the code doesn't need `_, _ =` on every line. gosec's G115, G204, G301, G304, G306 and G703 are excluded for the same reasons as in kube-onramp: running the user's tools and writing the user's files is twokey's job. G115 flags integer conversions in Win32 calls (the PID is range-checked first); G703 is G304 found by taint analysis.
+twokey prints to an `io.Writer` in many places. golangci-lint's `std-error-handling` exclusion covers unchecked `fmt.Fprint*` results, so the code doesn't need `_, _ =` on every line. gosec's G115, G204, G301, G304, G306, G702 and G703 are excluded for the same reasons as in kube-onramp: running the user's tools and writing the user's files is twokey's job. G115 flags integer conversions in Win32 calls (the PID is range-checked first); G702 and G703 are G204 and G304 found by taint analysis.
+
+## D29. The ref comparison leaves out remote-tracking refs
+An auditor may run `git fetch`, which moves `refs/remotes/*` but changes nothing the owner cares about. Counting it as a violation would pause runs for no reason. A push, which also moves a remote-tracking ref, is caught on the remote itself with `git ls-remote` (D20).
+
+## D30. A teammate's push is not an agent's push
+If the working branch moves on the remote during a step, twokey asks whether the new commit is in local history. If it is, an agent pushed (`PAUSE_INVARIANT`). If it isn't, someone else pushed: twokey warns, lets the step finish, and the push step pauses with `PAUSE_REMOTE_MOVED`. Protected branches stay strict: any change is `PAUSE_INVARIANT`.
+
+## D31. Exit codes
+0 = converged, or the owner stopped the run (q or Ctrl+C) to resume later; 1 = preflight failed or something broke; 2 = wrong command line; 3 = paused, waiting for the owner; 4 = stopped after the last round with findings left. Scripts can tell "done" from "needs you".
+
+## D32. Two more pause reasons, and what resume does per reason
+`PAUSE_PUSH_FAILED`: `git fetch` or `git push` failed (network, login). `PAUSE_INTERRUPTED`: a fix step was interrupted and left changes; twokey never discards the owner's tree. Resume first resolves the reason: failed agent steps and failed checks run again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues once the remote branch is part of local history; `PAUSE_INVARIANT` continues once the tree is clean, because the owner has looked at it.
+
+## D33. state.json is checked against what twokey last wrote
+twokey rewrites `state.json` during every step, so the run-folder manifest leaves it out. Instead, twokey keeps the hash of the file it last wrote and compares after each step. An agent that edits it still causes `PAUSE_INVARIANT`.
+
+## D34. Decisions and rulings are asked in both modes
+SPEC section 10 says a pause waits at the terminal prompt. So autopilot skips only the Enter presses between steps; a decision or ruling is still asked at the prompt. Without input (end of file, for example when stdin is not a terminal), the run pauses and `pending.md` says what is needed.
+
+## D35. fix_p3 includes "noted" P3 items
+The convergence template tells Claude to mark P3 items "noted", so "confirmed P3 repo_fix" (SPEC section 4, row 8) would never match. With `fix_p3 = true`, P3 repo_fix items that are not disputed or dropped are fixed.
+
+## D36. Dispute answers use the merged IDs
+The dispute prompt lists each disputed merged finding with the Codex IDs it came from, and asks Codex to answer per merged ID (for example `R1-M-02`). The rechecks must cover exactly the disputed merged IDs.
+
+## D37. The fake runner's scenario format
+Per round a folder `r<N>` holds `<step>.json` (the answer), `<step>.<attempt>.json` (the answer when the session is resumed), and `<step>.actions.json` (what the fake agent does first: `write`, `commit`, `append`, `push`, `teammate_push`, `no_answer`). `${commit}` and `${new_commits}` are filled in, with the same expander as the prompts. Scenarios live in test code, so each test shows its whole story.
+
+## D38. Until M2, run and resume need --fake-agents
+The real Codex and Claude runners come in M2. Without `--fake-agents`, `twokey run` says so and exits with code 2, so nobody starts a real run by accident.

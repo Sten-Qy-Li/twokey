@@ -75,7 +75,10 @@ type Round struct {
 	Published bool    `json:"published"` // audits copied out of staging and logged
 	Gate      *Gate   `json:"gate,omitempty"`
 	Verified  bool    `json:"verified"`
-	Pushed    bool    `json:"pushed"`
+	// VerifyRetries counts the fix session's extra tries after a failed
+	// check (at most one, SPEC section 8).
+	VerifyRetries int  `json:"verify_retries"`
+	Pushed        bool `json:"pushed"`
 }
 
 // Pause says why the run waits for the owner.

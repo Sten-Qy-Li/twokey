@@ -23,10 +23,14 @@ Early development. Working now:
 
 | Command | What it does |
 |---|---|
-| `twokey init` | Creates `local-only_twokey.toml` in the repository and checks that git ignores it. |
+| `twokey init [--templates]` | Creates `local-only_twokey.toml` in the repository and checks that git ignores it. `--templates` copies the prompt templates for editing. |
 | `twokey doctor` | Checks git, both agent CLIs and their options, the config, the repository, Docker and notifications. |
+| `twokey run --fake-agents <folder>` | Runs the whole loop with scripted agents, in stepper mode or with `--autopilot`. |
+| `twokey resume` | Continues a paused or stopped run. |
+| `twokey render <step>` | Prints a step's prompt without running it, for tuning the templates. |
+| `twokey unlock` | Removes a stale lock. |
 
-Coming next: `run` (stepper mode), `resume`, `render`, `unlock`, then real agent runs (`doctor --smoke`, `status`, `report`) and autopilot. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
+Coming next: real Codex and Claude runs (`run` without `--fake-agents`, `doctor --smoke`, `status`, `report`), then autopilot polish and notifications. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
 
 ## Install
 

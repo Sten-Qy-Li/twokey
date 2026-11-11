@@ -36,6 +36,10 @@ type Taker struct {
 	Branches []string // the working branch and the protected branches
 	LogPath  string
 	RunDir   string // this run's folder
+	// Skip leaves run-folder files out of the manifest (relative, with
+	// slashes): files twokey itself rewrites during a step, such as
+	// state.json, which the caller checks another way.
+	Skip func(rel string) bool
 }
 
 // Take records the repository's state now. It asks the remote too.
@@ -62,6 +66,13 @@ func (t Taker) Take(ctx context.Context) (Snapshot, error) {
 	}
 	if s.RunFiles, err = manifest(t.RunDir); err != nil {
 		return s, err
+	}
+	if t.Skip != nil {
+		for rel := range s.RunFiles {
+			if t.Skip(rel) {
+				delete(s.RunFiles, rel)
+			}
+		}
 	}
 	return s, nil
 }

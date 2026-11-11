@@ -17,6 +17,9 @@ type Cmd struct {
 	Name string
 	Args []string
 	Env  []string // extra KEY=value entries on top of the current environment
+	// Shell, if set, is a command line for the system shell (cmd /C on
+	// Windows, sh -c elsewhere); Name and Args are ignored.
+	Shell string
 }
 
 // Result is what a command did.
@@ -42,6 +45,10 @@ func (OS) LookPath(file string) (string, error) { return exec.LookPath(file) }
 // Run runs the command and waits for it. Stdin is empty.
 func (OS) Run(ctx context.Context, c Cmd) Result {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
+	if c.Shell != "" {
+		cmd = shellCommand(ctx, c.Shell)
+		c.Name = "the command"
+	}
 	cmd.Dir = c.Dir
 	if len(c.Env) > 0 {
 		cmd.Env = append(os.Environ(), c.Env...)

@@ -24,12 +24,12 @@ Usage:
 Commands:
   init      Create the config file and check .gitignore
   doctor    Check that everything twokey needs is in place
-  run       Start a run                          (not built yet)
-  resume    Continue a paused or stopped run     (not built yet)
+  run       Start a run (fake agents only for now)
+  resume    Continue a paused or stopped run
+  render    Show a prompt without running it
+  unlock    Remove a stale lock
   status    Show the current run                 (not built yet)
-  render    Show a prompt without running it     (not built yet)
   report    Rebuild a run's report               (not built yet)
-  unlock    Remove a stale lock                  (not built yet)
   version   Print the version
 
 Run "twokey <command> -h" to see a command's options.
@@ -38,9 +38,12 @@ Run "twokey <command> -h" to see a command's options.
 // Env is what a command needs from the outside world.
 type Env struct {
 	Dir    string // the folder twokey was started in
+	In     io.Reader
 	Out    io.Writer
 	Err    io.Writer
 	Runner proc.Runner
+	// StagingRoot and ScratchRoot replace twokey's own folders (tests).
+	StagingRoot, ScratchRoot string
 }
 
 // Main runs twokey and returns the exit code.
@@ -52,7 +55,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "twokey: can't read the current folder:", err)
 		return 1
 	}
-	return Run(ctx, args, Env{Dir: dir, Out: stdout, Err: stderr, Runner: proc.OS{}})
+	return Run(ctx, args, Env{Dir: dir, In: os.Stdin, Out: stdout, Err: stderr, Runner: proc.OS{}})
 }
 
 // Run runs one command line.
@@ -73,7 +76,15 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runInit(ctx, rest, env)
 	case "doctor":
 		return runDoctor(ctx, rest, env)
-	case "run", "resume", "status", "render", "report", "unlock":
+	case "run":
+		return runRun(ctx, rest, env)
+	case "resume":
+		return runResume(ctx, rest, env)
+	case "render":
+		return runRender(ctx, rest, env)
+	case "unlock":
+		return runUnlock(ctx, rest, env)
+	case "status", "report":
 		fmt.Fprintf(env.Err, "twokey %s isn't built yet. This is an early version: see the README.\n", cmd)
 		return 2
 	default:
@@ -111,8 +122,12 @@ func parse(fs *flag.FlagSet, args []string) int {
 func runInit(ctx context.Context, args []string, env Env) int {
 	fs := newFlags("init", "Creates the config file in the repository root and checks that git ignores it.", env)
 	configPath := fs.String("config", "", "write the config to this file instead of local-only_twokey.toml")
+	templates := fs.Bool("templates", false, "copy the default prompt templates to <run_dir>/templates for editing")
 	if code := parse(fs, args); code >= 0 {
 		return code
+	}
+	if *templates {
+		return copyTemplates(ctx, env, *configPath)
 	}
 	return initcmd.Run(ctx, initcmd.Options{Dir: env.Dir, ConfigPath: *configPath, Runner: env.Runner, Out: env.Out})
 }
