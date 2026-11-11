@@ -1,0 +1,5 @@
+# Keep LF everywhere, on every OS.
+* text=auto eol=lf
+
+# Test fixtures must keep their exact bytes (BOM, CRLF).
+**/testdata/** -text
