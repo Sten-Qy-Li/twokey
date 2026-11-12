@@ -130,7 +130,7 @@ Per round a folder `r<N>` holds `<step>.json` (the answer), `<step>.<attempt>.js
 ## D38. Until M2, run and resume need --fake-agents
 The real Codex and Claude runners come in M2. Without `--fake-agents`, `twokey run` says so and exits with code 2, so nobody starts a real run by accident.
 
-## D39. The branch catches up with an upstream only by fast-forward (2026-11-12)
+## D39. The branch catches up with an upstream only by fast-forward (2026-11-12; replaced by D57: twokey only compares)
 The owner's workflow: twokey works on the owner's branch. Teammates' merge requests go into another branch, the upstream, at any time. The owner merges the branch into the upstream through a merge request with a merge commit, never squash. The branch catches up with the upstream only by fast-forward: no merge commits, no rebase, no force push.
 - New key `[project] upstream`, default `""` (off, as before). It may not equal `branch`; it may be a protected branch, because twokey only reads it.
 - Each round starts with a sync step. Equal or ahead: nothing. Behind: `git merge --ff-only`, then a push with the normal push rules. Diverged: `PAUSE_DIVERGED`, telling the owner to merge the branch into the upstream with a merge commit (a squash merge makes the divergence permanent); `resume` runs the sync again.
@@ -202,3 +202,6 @@ In the same run, an agent's PostgreSQL container left an unnamed volume behind. 
 
 ## D56. One stop between steps in stepper mode (2026-11-12)
 Stepper mode used to wait twice between steps: "Press Enter to go on" after a result, then "Enter = run" before the next step. The rehearsal showed that the first stop adds nothing, because the second also offers `q`. A result is now shown without waiting, and the next step's prompt (or a question for the owner) is the stop. The checks after a fix, which had no prompt of their own, now get one, so the owner can still stop between the fix and the checks.
+
+## D57. twokey never moves the branch to the upstream (2026-11-12)
+Replaces D39's fast-forward, at the owner's request before the first real run: twokey shouldn't move the owner's branch to `main` by itself. `[project] upstream` stays, but only for comparing. At the start of each round, and in `doctor`, twokey says how the branch stands to `<remote>/<upstream>`. Behind or diverged is a `[WARN]` with the commit counts and what the owner can do (`git merge --ff-only` and `git push`; when diverged, first a merge request with a merge commit). The round goes on and audits the branch as it is, so `PAUSE_DIVERGED` is gone. The audits still get the comparison (`${upstream_status}`, D42), which now also covers a branch that is behind or has diverged. The report's advice after a converged run now ends with the commands to run, not "the next run fast-forwards". Not moving the branch also makes stepper and autopilot behave the same here.

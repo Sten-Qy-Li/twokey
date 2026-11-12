@@ -208,7 +208,8 @@ func TestProblems(t *testing.T) {
 				testutil.Git(t, dir, "merge", "--quiet", "--no-ff", "--no-edit", "origin/feature")
 				testutil.Git(t, dir, "push", "--quiet", "origin", "main")
 			},
-			want: "[OK]    origin/feature is 1 commit behind origin/main. twokey fast-forwards it when a round starts.",
+			want: "[WARN]  origin/feature is 1 commit behind origin/main. twokey doesn't move feature: a run audits it as it is.\n" +
+				"        Next: to bring those commits in, run git merge --ff-only origin/main and git push yourself.",
 			code: 0,
 		},
 		{

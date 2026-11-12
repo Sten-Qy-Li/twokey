@@ -1,6 +1,7 @@
 // Package upstream decides how the working branch stands to the upstream
-// branch it catches up with (SPEC section 3, "Sync"). It is pure logic; the
-// engine runs git and acts on the answer.
+// branch, the one the owner brings it up to (SPEC section 3, "Upstream").
+// It is pure logic; doctor and the engine run git and report the answer.
+// twokey never moves the branch (DECISIONS.md D57).
 package upstream
 
 import "fmt"
@@ -8,12 +9,12 @@ import "fmt"
 // Relation is how <remote>/<branch> stands to <remote>/<upstream>.
 type Relation int
 
-// The relations, and what twokey does about each.
+// The relations. Behind and Diverged are warnings: the owner acts on them.
 const (
-	Equal    Relation = iota // same commit: nothing to do
-	Ahead                    // the branch has commits the upstream lacks: nothing to do
-	Behind                   // the branch is an ancestor of the upstream: fast-forward it
-	Diverged                 // each has commits the other lacks: pause (PAUSE_DIVERGED)
+	Equal    Relation = iota // same commit
+	Ahead                    // the branch has commits the upstream lacks
+	Behind                   // the branch is an ancestor of the upstream
+	Diverged                 // each has commits the other lacks
 )
 
 // Classify takes the commit counts of "git rev-list --left-right --count
@@ -44,6 +45,21 @@ func Describe(rel Relation, ahead, behind int, branch, upstream string) string {
 	default:
 		return fmt.Sprintf("%s and %s have diverged: %s has %s that %s lacks, and %s has %s that %s lacks.",
 			branch, upstream, branch, commits(ahead), upstream, upstream, commits(behind), branch)
+	}
+}
+
+// Advice says what the owner can do about a branch that is behind or has
+// diverged; "" for the other relations.
+func Advice(rel Relation, remote, branch, upstream string) string {
+	ff := fmt.Sprintf("git merge --ff-only %s/%s and git push yourself", remote, upstream)
+	switch rel {
+	case Behind:
+		return "to bring those commits in, run " + ff + "."
+	case Diverged:
+		return fmt.Sprintf("merge %s into %s through a merge request with a merge commit (not squash: a squash merge keeps them diverged). Then run %s.",
+			branch, upstream, ff)
+	default:
+		return ""
 	}
 }
 

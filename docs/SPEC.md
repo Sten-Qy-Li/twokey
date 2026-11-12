@@ -42,7 +42,7 @@ preflight
   │
   ▼
 ┌──────────────────────────── round N (commit C) ────────────────────────────┐
-│ sync (script): fast-forward the branch to the upstream, if one is set      │
+│ upstream (script): compare the branch with the upstream, if one is set     │
 │ audits: Codex audit  ║  Claude audit      (parallel, blind, no repo edits) │
 │   → both results held in staging, then published together                  │
 │ convergence (Claude): verify, merge, confirm or dispute, look for more     │
@@ -61,12 +61,10 @@ final report (+ a twokey entry in the log)
 - After each agent step, twokey checks the invariants (section 8) **before** it publishes the result or moves on. If that check pauses the run, `resume` publishes and logs the step's answer without running the agent again (D41).
 - In `stepper` mode, every arrow above waits for Enter. In `autopilot`, the only stops are the pauses in section 10.
 
-**Sync** (D39). The owner's branch may catch up with another branch, `[project] upstream` (for example `main`, where teammates' merge requests land), but only by fast-forward. With `upstream = ""` (the default) this step does nothing. Otherwise, at the start of each round:
-1. `git fetch`. Local `HEAD` must equal `<remote>/<branch>`. The one exception is a fast-forward toward the upstream whose push failed; it is pushed now. Otherwise pause with `PAUSE_REMOTE_MOVED`.
-2. Compare `<remote>/<branch>` with `<remote>/<upstream>` (`git rev-list --left-right --count`). The decision is a pure function (`internal/upstream`):
-   - **Equal, or the branch is ahead:** nothing to do.
-   - **The branch is behind** (an ancestor of the upstream): in stepper mode, ask first. Then `git merge --ff-only <the upstream's commit>`, push with the push rules (section 8), and say what moved. The round audits the new commit. The report lists the fast-forward.
-   - **Diverged:** pause with `PAUSE_DIVERGED`. The owner merges the branch into the upstream through a merge request with a merge commit (not squash), then runs `twokey resume`. A squash merge leaves the branch's commits out of the upstream, so the two stay diverged for good. `resume` runs this step again and continues once they no longer diverge.
+**Upstream** (D39, D57). The owner's branch may be compared with another branch, `[project] upstream` (for example `main`, where teammates' merge requests land). twokey never moves the branch to it: bringing the upstream's commits in is the owner's call. With `upstream = ""` (the default) this step does nothing. Otherwise, at the start of each round, after `git fetch`, twokey compares the round's commit with `<remote>/<upstream>` (`git rev-list --left-right --count`; the decision is a pure function in `internal/upstream`):
+   - **Equal, or the branch is ahead:** an `[OK]` line.
+   - **The branch is behind** (an ancestor of the upstream), or **diverged:** a `[WARN]` that says how many commits each side lacks, and what the owner can do: `git merge --ff-only <remote>/<upstream>` and `git push` when behind; when diverged, first merge the branch into the upstream through a merge request with a merge commit (not squash, which keeps them diverged). The round goes on and audits the branch as it is.
+   - Either way, the audits get the comparison in their prompts (`${upstream_status}`, D42). `doctor` shows the same warning.
 
 ---
 
@@ -221,10 +219,9 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - If `commits` is empty (the agent changed nothing), pause with `PAUSE_NO_PROGRESS`.
 
 **Push (autopilot or stepper)**
-- Run `git fetch` again. If `<remote>/<branch>` moved since the round started (someone else pushed), pause with `PAUSE_REMOTE_MOVED`. Never merge or rebase automatically, except a fast-forward of `<branch>` to `<upstream>` when `upstream` is set (section 3, "Sync"; D39).
+- Run `git fetch` again. If `<remote>/<branch>` moved since the round started (someone else pushed), pause with `PAUSE_REMOTE_MOVED`. Never merge or rebase (D57).
 - Then run `git push <remote> HEAD:refs/heads/<branch>`: no force, no push options, never another branch.
 - Afterwards, `git ls-remote <remote> refs/heads/<branch>` must equal local `HEAD`. A protected branch that moved since the last check is noted and becomes the baseline (D40).
-- The sync step's fast-forward uses the same rules.
 
 ---
 
@@ -296,7 +293,7 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - `PAUSE_INVARIANT`, `PAUSE_VERIFY_FAILED`, `PAUSE_NO_PROGRESS`, `PAUSE_REMOTE_MOVED`
 - `PAUSE_AGENT_FAILED` (after one retry)
 - `PAUSE_PUSH_FAILED` (`git fetch` or `git push` failed), `PAUSE_INTERRUPTED` (a fix step was interrupted and left changes) (D32)
-- `PAUSE_DIVERGED` (the branch and `upstream` have diverged; D39), `PAUSE_PROTECTED_MOVED` (a protected branch moved during an agent step; D40)
+- `PAUSE_PROTECTED_MOVED` (a protected branch moved during an agent step; D40)
 - `PAUSE_USAGE_LIMIT` (when waiting isn't possible, see below)
 - `PAUSE_TIMEOUT` (fix step only; audit-type steps get one retry first)
 
@@ -334,7 +331,7 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - `twokey resume` picks up from the last finished step.
 - A step left `running` (because of a crash or Ctrl+C) first gets its Docker cleanup. Then it reruns if it's an audit, convergence or dispute step.
 - A `fix` left `running` pauses with the current `git status`; twokey never discards the owner's tree. If the tree is clean and HEAD is still the round's commit, the fix simply runs again.
-- After a pause, resume first resolves its reason (D32): a failed agent step runs again (also after `PAUSE_USAGE_LIMIT` and `PAUSE_TIMEOUT`); a failed check runs the checks again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues only once the remote branch is part of local history (the owner merged or rebased by hand); `PAUSE_INVARIANT` continues once the tree is clean (the owner looked and undid what was wrong); `PAUSE_DIVERGED` runs the sync step again; `PAUSE_PROTECTED_MOVED`, and a `PAUSE_INVARIANT` that includes a protected branch, first ask the owner to confirm the change (D40).
+- After a pause, resume first resolves its reason (D32): a failed agent step runs again (also after `PAUSE_USAGE_LIMIT` and `PAUSE_TIMEOUT`); a failed check runs the checks again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues only once the remote branch is part of local history (the owner merged or rebased by hand); `PAUSE_INVARIANT` continues once the tree is clean (the owner looked and undid what was wrong); `PAUSE_PROTECTED_MOVED`, and a `PAUSE_INVARIANT` that includes a protected branch, first ask the owner to confirm the change (D40).
 - A step that answered and then paused at its checks isn't run again: resume publishes and logs its answer and goes on (D41).
 
 ---
@@ -354,7 +351,7 @@ This is the template `twokey init` writes (`assets/config.toml`; a test keeps th
 branch = "my-branch"                        # the branch twokey audits, fixes and pushes
 remote = "origin"
 protected_branches = ["main"]               # twokey checks that these never change
-upstream = ""                               # e.g. "main": fast-forward branch to it each round; "" = off
+upstream = ""                               # e.g. "main": warn when branch is behind it; "" = off
 log_file = "local-only_logs.md"
 log_marker = "<!-- NEW LOGS GO DIRECTLY BELOW THIS LINE -->"
 run_dir = "local-only_twokey"               # inside the repo, must be git-ignored
@@ -422,7 +419,7 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 - `extra_args` may not contain options twokey sets itself or never uses (section 9).
 - The two port ranges may not overlap. `branch` may not be one of the `protected_branches`.
 - `[codex] web_search` is `""`, `"disabled"`, `"cached"`, `"indexed"` or `"live"`.
-- `upstream` is `""` (off) or a branch name other than `branch`. It may be, and usually is, one of the `protected_branches`: twokey only reads it, and fast-forwards `branch` to it (section 3, "Sync").
+- `upstream` is `""` (off) or a branch name other than `branch`. It may be, and usually is, one of the `protected_branches`: twokey only reads it and compares `branch` with it; it never moves `branch` (section 3, "Upstream").
 
 `twokey init` writes this template to the repository root. It fills in `branch` with the current branch, and `protected_branches` with the remote's default branch, when git knows them. It refuses to overwrite an existing file, and warns if `.gitignore` doesn't ignore both the config file and `run_dir`.
 
@@ -433,7 +430,7 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 | Command | What it does |
 |---|---|
 | `twokey init` | Creates the config template and checks `.gitignore`. |
-| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`, and how the branch stands to `upstream`: diverged is a `[WARN]`), what Codex's sandbox can't run (a `[WARN]`, D51), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one small schema-constrained call to each agent and resumes it once (D48): it tests the schema options, Codex's configured sandbox (a scratch write plus one network request), that a resumed session keeps its sandbox (a second write), that each agent can read the first bytes of a file in each extra read folder, the arguments that turn off screen and browser control, and that the repository is unchanged afterwards. twokey checks the files and bytes itself instead of trusting the answers, and shows the model each CLI reports and Claude's cost estimate. It needs the config and both CLIs; other `[FAIL]` lines don't block it. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
+| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`, and how the branch stands to `upstream`: behind or diverged is a `[WARN]` with the count, D57), what Codex's sandbox can't run (a `[WARN]`, D51), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one small schema-constrained call to each agent and resumes it once (D48): it tests the schema options, Codex's configured sandbox (a scratch write plus one network request), that a resumed session keeps its sandbox (a second write), that each agent can read the first bytes of a file in each extra read folder, the arguments that turn off screen and browser control, and that the repository is unchanged afterwards. twokey checks the files and bytes itself instead of trusting the answers, and shows the model each CLI reports and Claude's cost estimate. It needs the config and both CLIs; other `[FAIL]` lines don't block it. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
 | `twokey run [--autopilot] [--max-rounds N]` | Starts a run. Refuses if preflight fails. `--fake-agents <folder>` plays scripted answers instead of calling the CLIs (tests and demos). |
 | `twokey resume [--run ID] [--more-rounds N]` | Continues the latest (or given) run. Takes `--autopilot` and `--fake-agents` like `run`. |
 | `twokey status [--run ID]` | One screen: run, status (running with its process, paused with the reason), round, each step's status, time and tries, the last gate result, and what to do next. |
@@ -442,7 +439,7 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 | `twokey unlock` | Removes a stale lock after confirming that the PID inside it isn't running. |
 
 **Stepper mode:**
-- Before each step it prints the step, the agent and the path of the rendered prompt, then waits: `Enter` = run, `e` = open the prompt in the editor (`notepad` by default) and run the edited version, `q` = quit (resume later). The fast-forward, the checks after a fix and the push wait the same way, without `e`.
+- Before each step it prints the step, the agent and the path of the rendered prompt, then waits: `Enter` = run, `e` = open the prompt in the editor (`notepad` by default) and run the edited version, `q` = quit (resume later). The checks after a fix and the push wait the same way, without `e`.
 - Keep edited prompts next to the rendered ones, so the owner can carry improvements back into their templates.
 - After each step, it shows a findings table (ID, severity, kind, status, title) and the gate's next action. It doesn't wait there: the next step's prompt, or a question for the owner, is the one stop between steps (D56).
 - When an answer is sent back for a second try (section 9), a `[WARN]` names the reasons, and the heartbeat shows the step as `(try 2)`.
@@ -451,7 +448,7 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 
 Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
 
-**Exit codes** of `run` and `resume` (D31): 0 = converged, or the owner stopped the run to resume later; 1 = preflight failed or something broke; 2 = wrong command line; 3 = paused, waiting for the owner (every `PAUSE_*` reason, including `PAUSE_DIVERGED` and `PAUSE_PROTECTED_MOVED`, and a resume where the owner didn't confirm a protected branch change); 4 = stopped after the last round with findings left.
+**Exit codes** of `run` and `resume` (D31): 0 = converged, or the owner stopped the run to resume later; 1 = preflight failed or something broke; 2 = wrong command line; 3 = paused, waiting for the owner (every `PAUSE_*` reason, including `PAUSE_PROTECTED_MOVED`, and a resume where the owner didn't confirm a protected branch change); 4 = stopped after the last round with findings left.
 
 ---
 
@@ -482,9 +479,9 @@ Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
 7. Disputes and how they ended.
 8. Permission denials (Claude) and sandbox refusals (Codex), with the rule the owner could add.
 9. Time per step; Claude's estimated cost and Codex's token usage.
-10. Notes: gate notes, fast-forwards, protected-branch changes, model reroutes, and log headings that differ from the configured label (D44).
+10. Notes: gate notes, protected-branch changes, model reroutes, and log headings that differ from the configured label (D44).
 11. Which log entries to read for detail (by heading).
-12. Last, after a converged run with `upstream` set, if the branch has commits the upstream lacks: "**Next:** merge `<branch>` into `<upstream>` (merge commit, not squash). The next run fast-forwards." The terminal shows it too (D42).
+12. Last, after a converged run with `upstream` set, if the branch has commits the upstream lacks: "**Next:** merge `<branch>` into `<upstream>` (merge commit, not squash). Then run git merge --ff-only `<remote>/<upstream>` and git push yourself." The terminal shows it too (D42).
 
 `twokey report` rebuilds `report.md` from `state.json` without adding a log entry.
 
@@ -637,7 +634,7 @@ ${p3_rule}
   - the log heading label: reported model with and without a `[model_names]` entry, no reported model, and the mismatch flag;
   - Docker cleanup with a fake `docker`: only names with the step's prefix are removed, also when another name merely contains the prefix.
 - Tests never read or write the developer's real home, git config or projects: they use `t.TempDir()` and `t.Setenv` (including `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`).
-- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. The scenario format is described in `internal/runner/fake.go`: per round, `<step>.json` answers (with `${commit}` and `${new_commits}`), `<step>.<attempt>.json` for a resumed retry, and `<step>.actions.json` for what the fake agent does first: write files, commit, append to a file, push, or let a teammate push to the branch or, with `teammate_branch`, to another one (D37, D40). End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent pushing by itself (expect `PAUSE_INVARIANT`); resume after a pause at a step's checks (D41). With `upstream` set (D39): behind (fast-forward and push), ahead, equal, diverged (`PAUSE_DIVERGED`, then resume after a merge-commit merge), the owner fast-forwarding by hand while paused, and the upstream moving during a round. Protected branches (D40): one moved by someone else during a step (`PAUSE_PROTECTED_MOVED`; only `y` confirms), and one moved together with an agent's push (`PAUSE_INVARIANT`). Running agents (M2): an audit's timeout gets one fresh try, two mean `PAUSE_TIMEOUT`; a fix's timeout pauses at once; a usage limit with a near reset time is waited out, one without pauses (`PAUSE_USAGE_LIMIT`), and a fix that committed before its limit pauses; Docker cleanup after every step; Claude session IDs chosen up front; usage of a resumed Claude session counted once, whether or not Claude restored its earlier totals; an answer sent back is shown and reported; raw output published; the heartbeat; one stop between steps in stepper mode, with the checks' own prompt; `status` and `report`.
+- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. The scenario format is described in `internal/runner/fake.go`: per round, `<step>.json` answers (with `${commit}` and `${new_commits}`), `<step>.<attempt>.json` for a resumed retry, and `<step>.actions.json` for what the fake agent does first: write files, commit, append to a file, push, or let a teammate push to the branch or, with `teammate_branch`, to another one (D37, D40). End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent pushing by itself (expect `PAUSE_INVARIANT`); resume after a pause at a step's checks (D41). With `upstream` set (D39, D57): behind and diverged (a warning, nothing moves, the round audits the branch as it is), ahead, equal, and the upstream moving during a round. Protected branches (D40): one moved by someone else during a step (`PAUSE_PROTECTED_MOVED`; only `y` confirms), and one moved together with an agent's push (`PAUSE_INVARIANT`). Running agents (M2): an audit's timeout gets one fresh try, two mean `PAUSE_TIMEOUT`; a fix's timeout pauses at once; a usage limit with a near reset time is waited out, one without pauses (`PAUSE_USAGE_LIMIT`), and a fix that committed before its limit pauses; Docker cleanup after every step; Claude session IDs chosen up front; usage of a resumed Claude session counted once, whether or not Claude restored its earlier totals; an answer sent back is shown and reported; raw output published; the heartbeat; one stop between steps in stepper mode, with the checks' own prompt; `status` and `report`.
 - **Real CLIs without calling them:** the command lines are built by pure functions with table tests, and the output parsers and runs are tested with output in the documented formats, written by a fake launcher. The process tree launcher is tested with the test binary as child and grandchild. `doctor --smoke` is tested with fake agents that do what the prompt asks.
 - **CI:** GitHub Actions on `windows-latest` and `ubuntu-latest`, running `go vet` and `go test` (plus `go test -race` on Linux), `golangci-lint`, `govulncheck` and a `go mod tidy` check. Actions are pinned to full commit SHAs and tool versions are pinned; new versions must be at least 7 days old (D2). No real agent calls in CI, ever.
 - **Smoke test on the owner's machine:** `twokey doctor --smoke`, with their OK.

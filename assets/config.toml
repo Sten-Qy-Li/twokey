@@ -6,7 +6,7 @@
 branch = "my-branch"                        # the branch twokey audits, fixes and pushes
 remote = "origin"
 protected_branches = ["main"]               # twokey checks that these never change
-upstream = ""                               # e.g. "main": fast-forward branch to it each round; "" = off
+upstream = ""                               # e.g. "main": warn when branch is behind it; "" = off
 log_file = "local-only_logs.md"
 log_marker = "<!-- NEW LOGS GO DIRECTLY BELOW THIS LINE -->"
 run_dir = "local-only_twokey"               # inside the repo, must be git-ignored

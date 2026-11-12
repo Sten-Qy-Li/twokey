@@ -25,8 +25,8 @@ const (
 // UI is how the engine talks to the owner. Stepper mode asks at every
 // step; autopilot never asks.
 type UI interface {
-	// Before is called before an agent step, the checks, a fast-forward
-	// or a push. In stepper mode it is the one stop between steps (D56).
+	// Before is called before an agent step, the checks or a push. In
+	// stepper mode it is the one stop between steps (D56).
 	Before(what string, prompts []string) Choice
 	// Edited is called after the editor closed, before the edited prompt
 	// is used. false = quit.

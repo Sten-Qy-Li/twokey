@@ -13,9 +13,9 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/testutil"
 )
 
-// The tests for [project] upstream (D39) and for protected branches that
-// someone else moves (D40). In newWorld, feature is one commit ahead of
-// main.
+// The tests for [project] upstream (D39, D57: twokey compares, never moves
+// the branch) and for protected branches that someone else moves (D40). In
+// newWorld, feature is one commit ahead of main.
 
 // mergeOnRemote merges one branch of the remote into another with a merge
 // commit, as a merge request does, and returns the merge commit.
@@ -58,31 +58,31 @@ func (w *world) report() string {
 	return string(b)
 }
 
-func TestUpstreamBehindFastForwards(t *testing.T) {
+// Behind: twokey says how far, and audits the branch as it is. It never
+// moves the branch (D57).
+func TestUpstreamBehindIsOnlyReported(t *testing.T) {
 	w := newWorld(t)
 	w.cfg.Project.Upstream = "main"
 	w.mergeOnRemote("feature", "main")
 	tip := w.pushOnRemote("main", "Teammate's feature")
+	head := w.head()
 	w.cleanRound(1)
 	w.expect(w.start(""), engine.ExitDone)
 
-	if c := w.state().Rounds[0].Commit; c != tip || w.head() != tip || w.remoteSHA("feature") != tip {
-		t.Errorf("round 1 audits %s, HEAD is %s, origin/feature is %s; want all %s", c, w.head(), w.remoteSHA("feature"), tip)
+	if c := w.state().Rounds[0].Commit; c != head || w.head() != head || w.remoteSHA("feature") != head || w.remoteSHA("main") != tip {
+		t.Errorf("nothing may move: round 1 audits %s, HEAD is %s, origin/feature is %s, origin/main is %s", c, w.head(), w.remoteSHA("feature"), w.remoteSHA("main"))
 	}
-	if w.remoteSHA("main") != tip {
-		t.Error("main changed")
-	}
-	w.outHas("Fast-forwarded feature to origin/main and pushed it")
-	w.outHas("(2 commits)")
+	w.outHas("[WARN]  origin/feature is 2 commits behind origin/main. twokey doesn't move feature: this round audits it as it is.\n" +
+		"        Next: to bring those commits in, run git merge --ff-only origin/main and git push yourself.")
 	for _, name := range []string{"codex-audit", "claude-audit", "convergence"} {
 		prompt, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", name+".prompt.md"))
-		want := fmt.Sprintf("Upstream branch: origin/main. When this round started, it was the same commit as the one you audit (%s).", tip[:12])
+		want := fmt.Sprintf("Upstream branch: origin/main. When this round started, it was %s, 2 commits ahead of the commit you audit (%s). "+
+			"A deployment built from origin/main may include changes that this commit lacks.", tip[:12], head[:12])
 		if !strings.Contains(string(prompt), want) {
 			t.Errorf("the %s prompt lacks %q", name, want)
 		}
 	}
-	report := w.report()
-	if !strings.Contains(report, "Round 1: fast-forwarded feature from ") || strings.Contains(report, "**Next:**") {
+	if report := w.report(); strings.Contains(report, "fast-forward") || strings.Contains(report, "**Next:**") {
 		t.Errorf("report:\n%s", report)
 	}
 }
@@ -119,7 +119,7 @@ func TestUpstreamNothingToDo(t *testing.T) {
 			if want := fmt.Sprintf(tc.prompt, head[:12]); !strings.Contains(string(prompt), want) {
 				t.Errorf("the audit prompt lacks %q:\n%s", want, prompt)
 			}
-			const advice = "merge feature into main (merge commit, not squash). The next run fast-forwards."
+			const advice = "merge feature into main (merge commit, not squash). Then run git merge --ff-only origin/main and git push yourself."
 			report := w.report()
 			if got := strings.HasSuffix(report, "\n**Next:** "+advice+"\n"); got != tc.advice {
 				t.Errorf("report ends with the advice: %v, want %v:\n%s", got, tc.advice, report)
@@ -141,55 +141,34 @@ func TestUpstreamOffInPrompts(t *testing.T) {
 	}
 }
 
-func TestUpstreamDivergedPausesUntilMerged(t *testing.T) {
+// Diverged: a warning with what to do, no pause. The audits learn how the
+// commit stands to the upstream, and the report ends with the advice.
+func TestUpstreamDivergedIsOnlyReported(t *testing.T) {
 	w := newWorld(t)
 	w.cfg.Project.Upstream = "main"
-	w.pushOnRemote("main", "Teammate's work")
+	tip := w.pushOnRemote("main", "Teammate's work")
+	head := w.head()
 	w.cleanRound(1)
-	w.expect(w.start(""), engine.ExitPaused)
-	if st := w.state(); st.Pause.Reason != "PAUSE_DIVERGED" || len(st.Rounds[0].Steps) != 0 {
-		t.Fatalf("pause %+v, steps %v", st.Pause, st.Rounds[0].Steps)
+	w.expect(w.start(""), engine.ExitDone)
+	if w.head() != head || w.remoteSHA("feature") != head || w.remoteSHA("main") != tip {
+		t.Error("nothing may move")
 	}
-	w.outHas("origin/feature and origin/main have diverged: origin/feature has 1 commit that origin/main lacks")
-	pending, _ := os.ReadFile(filepath.Join(w.runDir(), "pending.md"))
-	for _, want := range []string{"Merge feature into main first, through a merge request with a merge commit (not squash).", "A squash merge leaves"} {
-		if !strings.Contains(string(pending), want) {
-			t.Errorf("pending.md lacks %q:\n%s", want, pending)
-		}
+	w.outHas("[WARN]  origin/feature and origin/main have diverged: origin/feature has 1 commit that origin/main lacks")
+	w.outHas("Next: merge feature into main through a merge request with a merge commit (not squash: a squash merge keeps them diverged).")
+	prompt, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", "codex-audit.prompt.md"))
+	if want := fmt.Sprintf("it was %s, and it had diverged from the commit you audit (%s): this commit has 1 commit that origin/main lacks, "+
+		"and origin/main has 1 commit that this commit lacks.", tip[:12], head[:12]); !strings.Contains(string(prompt), want) {
+		t.Errorf("the audit prompt lacks %q:\n%s", want, prompt)
 	}
-
-	w.expect(w.resume("", 0), engine.ExitPaused) // still diverged
-	merge := w.mergeOnRemote("feature", "main")
-	w.expect(w.resume("", 0), engine.ExitDone)
-	if c := w.state().Rounds[0].Commit; c != merge || w.remoteSHA("feature") != merge {
-		t.Errorf("round 1 audits %s, origin/feature is %s; want the merge %s", c, w.remoteSHA("feature"), merge)
-	}
-	// main moved while the run was paused. No agent ran then, so it is
-	// only noted.
-	w.outHas("main moved on origin while no agent was running")
-}
-
-// The owner fast-forwarded the branch locally while the run was paused,
-// but didn't push it: twokey pushes it.
-func TestOwnerFastForwardedWhilePaused(t *testing.T) {
-	w := newWorld(t)
-	w.cfg.Project.Upstream = "main"
-	w.pushOnRemote("main", "Teammate's work")
-	w.cleanRound(1)
-	w.expect(w.start(""), engine.ExitPaused)
-	merge := w.mergeOnRemote("feature", "main")
-	testutil.Git(t, w.repo.Dir, "fetch", "--quiet", "origin")
-	testutil.Git(t, w.repo.Dir, "merge", "--quiet", "--ff-only", "origin/main")
-	w.expect(w.resume("", 0), engine.ExitDone)
-	if w.remoteSHA("feature") != merge || w.state().Rounds[0].Commit != merge {
-		t.Errorf("origin/feature is %s, want %s", w.remoteSHA("feature"), merge)
+	if !strings.HasSuffix(w.report(), "**Next:** merge feature into main (merge commit, not squash). Then run git merge --ff-only origin/main and git push yourself.\n") {
+		t.Errorf("report:\n%s", w.report())
 	}
 }
 
 // The whole story: a teammate's merge request lands on main (protected,
 // and the upstream) while the fix runs. twokey can't tell it from an
-// agent's push, so it asks. Then round 2 can't start until the owner
-// merges the branch into main; after that, it fast-forwards.
+// agent's push, so it asks. Round 2 then audits the fix as it is, with a
+// warning that the branch and main have diverged.
 func TestUpstreamMovesDuringARound(t *testing.T) {
 	w := newWorld(t)
 	w.cfg.Project.Upstream = "main"
@@ -207,22 +186,14 @@ func TestUpstreamMovesDuringARound(t *testing.T) {
 	w.outHas("Merge branch 'teammate' into 'main' (twokey test)")
 	w.outHas("twokey can't tell a teammate's merge from an agent's push")
 
-	w.expect(w.resume("y\n", 0), engine.ExitPaused)
+	w.expect(w.resume("y\n", 0), engine.ExitDone)
 	st = w.state()
-	if st.Pause.Reason != "PAUSE_DIVERGED" || len(st.Rounds) != 2 || !st.Rounds[0].Pushed || !st.Rounds[0].IsDone(state.Fix) {
-		t.Fatalf("after the confirmation: pause %+v, %d rounds", st.Pause, len(st.Rounds))
+	if st.Status != state.Converged || len(st.Rounds) != 2 || !st.Rounds[0].Pushed || st.Rounds[1].Commit != w.head() || w.remoteSHA("feature") != w.head() {
+		t.Fatalf("after the confirmation: status %s, %d rounds", st.Status, len(st.Rounds))
 	}
-
-	merge := w.mergeOnRemote("feature", "main")
-	w.expect(w.resume("", 0), engine.ExitDone)
-	st = w.state()
-	if st.Status != state.Converged || st.Rounds[1].Commit != merge {
-		t.Errorf("status %s, round 2 audits %s, want the merge %s", st.Status, st.Rounds[1].Commit, merge)
-	}
-	for _, want := range []string{"Round 1: you confirmed that main moved on origin during round 1's fix step", "Round 2: fast-forwarded feature from "} {
-		if !strings.Contains(w.report(), want) {
-			t.Errorf("report lacks %q:\n%s", want, w.report())
-		}
+	w.outHas("[WARN]  origin/feature and origin/main have diverged")
+	if want := "Round 1: you confirmed that main moved on origin during round 1's fix step"; !strings.Contains(w.report(), want) {
+		t.Errorf("report lacks %q:\n%s", want, w.report())
 	}
 }
 

@@ -51,7 +51,6 @@ const (
 	PauseAgentFailed = "PAUSE_AGENT_FAILED"
 	PausePushFailed  = "PAUSE_PUSH_FAILED"
 	PauseInterrupted = "PAUSE_INTERRUPTED"
-	PauseDiverged    = "PAUSE_DIVERGED"        // the branch and [project] upstream diverged (D39)
 	PauseProtected   = "PAUSE_PROTECTED_MOVED" // a protected branch moved during an agent step (D40)
 	PauseUsageLimit  = "PAUSE_USAGE_LIMIT"
 	PauseTimeout     = "PAUSE_TIMEOUT"
@@ -347,7 +346,7 @@ func (e *engine) loop(ctx context.Context) int {
 		var goOn bool
 		switch {
 		case !r.Synced:
-			goOn = e.sync(ctx, r)
+			goOn = e.compareUpstream(ctx, r)
 		case !r.Published:
 			goOn = e.audits(ctx, r)
 		case !r.IsDone(state.Convergence):

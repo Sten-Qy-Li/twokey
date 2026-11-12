@@ -397,7 +397,8 @@ func (d *doctor) checkRemote(root string, p config.Project) {
 }
 
 // checkUpstream shows how the branch stands to [project] upstream, after
-// git fetch (DECISIONS.md D39).
+// git fetch. Behind or diverged is a warning: twokey never moves the branch
+// (DECISIONS.md D57).
 func (d *doctor) checkUpstream(ctx context.Context, repo gitx.Repo, p config.Project) {
 	branch, up := p.Remote+"/"+p.Branch, p.Remote+"/"+p.Upstream
 	if _, err := repo.RevParse(ctx, "refs/remotes/"+up); err != nil {
@@ -410,15 +411,11 @@ func (d *doctor) checkUpstream(ctx context.Context, repo gitx.Repo, p config.Pro
 	}
 	rel := upstream.Classify(ahead, behind)
 	msg := upstream.Describe(rel, ahead, behind, branch, up)
-	switch rel {
-	case upstream.Behind:
-		d.ok(msg + " twokey fast-forwards it when a round starts.")
-	case upstream.Diverged:
-		d.warn(msg+" A run pauses at its start until they no longer diverge.",
-			fmt.Sprintf("merge %s into %s through a merge request with a merge commit (not squash).", p.Branch, p.Upstream))
-	default:
-		d.ok(msg)
+	if advice := upstream.Advice(rel, p.Remote, p.Branch, p.Upstream); advice != "" {
+		d.warn(msg+" twokey doesn't move "+p.Branch+": a run audits it as it is.", advice)
+		return
 	}
+	d.ok(msg)
 }
 
 // checkCodexSandbox tries the commands Codex audits use inside Codex's

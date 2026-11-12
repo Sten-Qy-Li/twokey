@@ -13,11 +13,12 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/upstream"
 )
 
-// sync starts a round (SPEC section 3, "Sync"). With [project] upstream
-// set, it fast-forwards the branch to <remote>/<upstream> when the branch is
-// behind, and pauses when the two have diverged. Apart from this
-// fast-forward, twokey never merges or rebases (DECISIONS.md D39).
-func (e *engine) sync(ctx context.Context, r *state.Round) bool {
+// compareUpstream starts a round (SPEC section 3, "Upstream"). With
+// [project] upstream set, it notes how the round's commit stands to
+// <remote>/<upstream>, for the audits (${upstream_status}), and warns when
+// it is behind or has diverged. It never moves the branch: bringing the
+// upstream's commits in is the owner's call (DECISIONS.md D57).
+func (e *engine) compareUpstream(ctx context.Context, r *state.Round) bool {
 	up := e.cfg.Project.Upstream
 	if up == "" {
 		e.update(func() { r.Synced = true })
@@ -25,44 +26,26 @@ func (e *engine) sync(ctx context.Context, r *state.Round) bool {
 	}
 	remote, branch := e.st.Remote, e.st.Branch
 	if err := e.repo.Fetch(ctx, remote); err != nil {
-		return e.pause(PausePushFailed, "git fetch failed: "+err.Error(), "Check your network and login, then run twokey resume.", "sync", nil)
+		return e.pause(PausePushFailed, "git fetch failed: "+err.Error(), "Check your network and login, then run twokey resume.", "upstream", nil)
 	}
-	head, errH := e.repo.RevParse(ctx, "HEAD")
-	rb, errB := e.repo.RevParse(ctx, "refs/remotes/"+remote+"/"+branch)
-	ru, errU := e.repo.RevParse(ctx, "refs/remotes/"+remote+"/"+up)
-	if errH != nil || errB != nil || errU != nil {
-		return e.pause(PauseInvariant, fmt.Sprintf("Can't read HEAD, %s/%s or %s/%s after git fetch.", remote, branch, remote, up),
-			"Check [project] branch and upstream in the config, then run twokey resume.", "sync", nil)
-	}
-	// HEAD must match the remote branch. The one exception is a
-	// fast-forward toward the upstream whose push failed: it is pushed now.
-	if head != rb {
-		fromBranch, _ := e.repo.IsAncestor(ctx, rb, head)
-		toUpstream, _ := e.repo.IsAncestor(ctx, head, ru)
-		if !fromBranch || !toUpstream {
-			return e.pause(PauseRemoteMoved, fmt.Sprintf("HEAD (%s) and %s/%s (%s) differ.", short(head), remote, branch, short(rb)),
-				fmt.Sprintf("Make them match: push your commits, or run git merge --ff-only %s/%s. Then run twokey resume.", remote, branch), "sync", nil)
-		}
-	}
-	ahead, behind, err := e.repo.AheadBehind(ctx, rb, ru)
+	ru, err := e.repo.RevParse(ctx, "refs/remotes/"+remote+"/"+up)
 	if err != nil {
-		return e.pause(PauseInvariant, "Can't compare the branches: "+err.Error(), "Check the repository, then run twokey resume.", "sync", nil)
+		return e.pause(PauseInvariant, fmt.Sprintf("Can't read %s/%s after git fetch.", remote, up),
+			"Check [project] upstream in the config, then run twokey resume.", "upstream", nil)
+	}
+	ahead, behind, err := e.repo.AheadBehind(ctx, r.Commit, ru)
+	if err != nil {
+		return e.pause(PauseInvariant, "Can't compare the branches: "+err.Error(), "Check the repository, then run twokey resume.", "upstream", nil)
 	}
 	rel := upstream.Classify(ahead, behind)
 	what := upstream.Describe(rel, ahead, behind, remote+"/"+branch, remote+"/"+up)
-	switch rel {
-	case upstream.Diverged:
-		return e.pause(PauseDiverged, what+" twokey only fast-forwards "+branch+". It never merges or rebases it.",
-			fmt.Sprintf("Merge %s into %s first, through a merge request with a merge commit (not squash). Then run twokey resume. "+
-				"A squash merge leaves the commits of %s out of %s, so the two stay diverged for good.", branch, up, branch, up), "sync", nil)
-	case upstream.Behind:
-		return e.fastForward(ctx, r, rb, ru, behind)
+	if advice := upstream.Advice(rel, remote, branch, up); advice != "" {
+		ui.Line(e.o.Out, ui.Warn, what+" twokey doesn't move "+branch+": this round audits it as it is.")
+		ui.Next(e.o.Out, advice)
+	} else {
+		ui.Line(e.o.Out, ui.OK, what)
 	}
-	ui.Line(e.o.Out, ui.OK, what)
-	e.update(func() {
-		r.Commit, r.RemoteSHA, r.Synced = rb, rb, true
-		r.UpstreamSHA, r.UpstreamAhead = ru, ahead
-	})
+	e.update(func() { r.Synced, r.UpstreamSHA, r.UpstreamAhead, r.UpstreamBehind = true, ru, ahead, behind })
 	return true
 }
 
@@ -80,13 +63,21 @@ func (e *engine) upstreamStatus(r *state.Round) string {
 	switch {
 	case r.UpstreamSHA == "":
 		return fmt.Sprintf("%s. twokey hasn't compared this commit with it yet.", ref)
-	case r.UpstreamAhead == 0:
+	case r.UpstreamAhead == 0 && r.UpstreamBehind == 0:
 		return fmt.Sprintf("%s. When this round started, it was the same commit as the one you audit (%s). "+
 			"A deployment built from %s runs this commit once it has finished deploying.%s", ref, short(r.Commit), ref, same)
-	default:
+	case r.UpstreamBehind == 0:
 		return fmt.Sprintf("%s. When this round started, it was %s, and the commit you audit (%s) was %s ahead of it. "+
 			"A deployment built from %s doesn't include those commits yet.%s",
 			ref, short(r.UpstreamSHA), short(r.Commit), plural(r.UpstreamAhead, "commit"), ref, same)
+	case r.UpstreamAhead == 0:
+		return fmt.Sprintf("%s. When this round started, it was %s, %s ahead of the commit you audit (%s). "+
+			"A deployment built from %s may include changes that this commit lacks.%s",
+			ref, short(r.UpstreamSHA), plural(r.UpstreamBehind, "commit"), short(r.Commit), ref, same)
+	default:
+		return fmt.Sprintf("%s. When this round started, it was %s, and it had diverged from the commit you audit (%s): "+
+			"this commit has %s that %s lacks, and %s has %s that this commit lacks. A deployment built from %s runs a different mix of changes.%s",
+			ref, short(r.UpstreamSHA), short(r.Commit), plural(r.UpstreamAhead, "commit"), ref, ref, plural(r.UpstreamBehind, "commit"), ref, same)
 	}
 }
 
@@ -103,37 +94,8 @@ func (e *engine) upstreamAdvice(ctx context.Context) string {
 	if err != nil || ahead == 0 {
 		return ""
 	}
-	return fmt.Sprintf("merge %s into %s (merge commit, not squash). The next run fast-forwards.", e.st.Branch, up)
-}
-
-// fastForward moves the branch from 'from' to the upstream's commit: first
-// locally with git merge --ff-only, then on the remote with the push rules
-// of SPEC section 8.
-func (e *engine) fastForward(ctx context.Context, r *state.Round, from, to string, n int) bool {
-	remote, branch, up := e.st.Remote, e.st.Branch, e.cfg.Project.Upstream
-	if e.o.UI.Before(fmt.Sprintf("fast-forward %s to %s/%s (%s, %s), then push it", branch, remote, up, short(to), plural(n, "new commit")), nil) == Quit {
-		return e.quit()
-	}
-	if err := e.repo.MergeFFOnly(ctx, to); err != nil {
-		return e.pause(PauseInvariant, "git merge --ff-only failed: "+err.Error(),
-			fmt.Sprintf("Run git merge --ff-only %s/%s yourself to see why, then run twokey resume.", remote, up), "sync", nil)
-	}
-	if head, _ := e.repo.RevParse(ctx, "HEAD"); head != to {
-		return e.pause(PauseInvariant, fmt.Sprintf("HEAD is %s after the fast-forward, not %s.", short(head), short(to)),
-			"Check the repository, then run twokey resume.", "sync", nil)
-	}
-	e.update(func() { r.RemoteSHA = from })
-	if !e.pushHead(ctx, r, "sync") {
-		return false
-	}
-	note := fmt.Sprintf("Round %d: fast-forwarded %s from %s to %s (%s from %s/%s).", r.N, branch, short(from), short(to), plural(n, "commit"), remote, up)
-	e.update(func() {
-		r.Commit, r.RemoteSHA, r.Synced = to, to, true
-		r.UpstreamSHA, r.UpstreamAhead = to, 0
-		e.st.Notes = append(e.st.Notes, note)
-	})
-	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Fast-forwarded %s to %s/%s and pushed it: %s -> %s (%s).", branch, remote, up, short(from), short(to), plural(n, "commit")))
-	return true
+	return fmt.Sprintf("merge %s into %s (merge commit, not squash). Then run git merge --ff-only %s/%s and git push yourself.",
+		e.st.Branch, up, e.st.Remote, up)
 }
 
 // pushHead pushes HEAD to <remote>/<branch> with the push rules of SPEC

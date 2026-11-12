@@ -95,15 +95,16 @@ type Round struct {
 	N         int    `json:"n"`
 	Commit    string `json:"commit"`     // the commit both audits audit
 	RemoteSHA string `json:"remote_sha"` // <remote>/<branch> when the round started
-	Synced    bool   `json:"synced"`     // the round's start caught up with [project] upstream (SPEC section 3)
-	// At the sync: <remote>/<upstream>, and how many commits Commit is
-	// ahead of it (DECISIONS.md D42).
-	UpstreamSHA   string  `json:"upstream_sha,omitempty"`
-	UpstreamAhead int     `json:"upstream_ahead,omitempty"`
-	Steps         []*Step `json:"steps"`
-	Published     bool    `json:"published"` // audits copied out of staging and logged
-	Gate          *Gate   `json:"gate,omitempty"`
-	Verified      bool    `json:"verified"`
+	Synced    bool   `json:"synced"`     // the round's start compared Commit with [project] upstream (SPEC section 3)
+	// At that comparison: <remote>/<upstream>, and how many commits Commit
+	// is ahead of it and behind it (DECISIONS.md D42, D57).
+	UpstreamSHA    string  `json:"upstream_sha,omitempty"`
+	UpstreamAhead  int     `json:"upstream_ahead,omitempty"`
+	UpstreamBehind int     `json:"upstream_behind,omitempty"`
+	Steps          []*Step `json:"steps"`
+	Published      bool    `json:"published"` // audits copied out of staging and logged
+	Gate           *Gate   `json:"gate,omitempty"`
+	Verified       bool    `json:"verified"`
 	// VerifyRetries counts the fix session's extra tries after a failed
 	// check (at most one, SPEC section 8).
 	VerifyRetries int  `json:"verify_retries"`

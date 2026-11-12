@@ -39,3 +39,21 @@ func TestDescribe(t *testing.T) {
 		}
 	}
 }
+
+func TestAdvice(t *testing.T) {
+	tests := []struct {
+		rel  Relation
+		want string
+	}{
+		{Equal, ""},
+		{Ahead, ""},
+		{Behind, "to bring those commits in, run git merge --ff-only origin/main and git push yourself."},
+		{Diverged, "merge b into main through a merge request with a merge commit (not squash: a squash merge keeps them diverged). " +
+			"Then run git merge --ff-only origin/main and git push yourself."},
+	}
+	for _, tt := range tests {
+		if got := Advice(tt.rel, "origin", "b", "main"); got != tt.want {
+			t.Errorf("Advice(%d) = %q, want %q", tt.rel, got, tt.want)
+		}
+	}
+}
