@@ -165,10 +165,21 @@ func TestDockerCleanupAfterEachStep(t *testing.T) {
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // Claude's session ID is chosen by twokey and saved before the step runs
-// (D8). A resumed Claude session reports its whole total, so the step's
-// usage isn't counted twice. Raw output is published with the answer, and
-// the report lists denials, cost and a label that doesn't match.
+// (D8). A resumed Claude session usually reports the session's totals,
+// earlier calls included; either way the step's usage is counted once
+// (D53). An answer sent back is shown and reported (D54). Raw output is
+// published with the answer, and the report lists denials, cost and a
+// label that doesn't match.
 func TestSessionsUsageAndReport(t *testing.T) {
+	for name, resumed := range map[string]runner.Usage{
+		"totals restored":     {InputTokens: 150, OutputTokens: 15, CostUSD: 1.5, CallInputTokens: 50},
+		"totals not restored": {InputTokens: 50, OutputTokens: 5, CostUSD: 0.5, CallInputTokens: 50},
+	} {
+		t.Run(name, func(t *testing.T) { testSessionsUsageAndReport(t, resumed) })
+	}
+}
+
+func testSessionsUsageAndReport(t *testing.T, resumed runner.Usage) {
 	w := newWorld(t)
 	w.cleanRound(1)
 	wrong := conv()
@@ -186,9 +197,9 @@ func TestSessionsUsageAndReport(t *testing.T) {
 			res.SessionID = req.SessionID
 		}
 		res.Model = "claude-opus-6-0"
-		res.Usage = runner.Usage{InputTokens: 100, OutputTokens: 10, CostUSD: 1}
+		res.Usage = runner.Usage{InputTokens: 100, OutputTokens: 10, CostUSD: 1, CallInputTokens: 100}
 		if req.Resume != "" {
-			res.Usage = runner.Usage{InputTokens: 150, OutputTokens: 15, CostUSD: 1.5} // the session's total
+			res.Usage = resumed
 		}
 		if req.Name == state.ClaudeAudit {
 			res.Denials = []string{"Bash: git push origin HEAD"}
@@ -196,6 +207,7 @@ func TestSessionsUsageAndReport(t *testing.T) {
 	}
 	o.Runner = rec
 	w.expect(engine.Start(t.Context(), o), engine.ExitDone)
+	w.outHas("[WARN]  twokey can't use convergence's answer. It gets one more try in the same session:\n        - audited_commit is ")
 
 	st := w.state()
 	for _, req := range rec.reqs {
@@ -209,7 +221,7 @@ func TestSessionsUsageAndReport(t *testing.T) {
 		}
 	}
 	cv := st.Rounds[0].Step(state.Convergence)
-	if cv.Usage.CostUSD != 1.5 || cv.Usage.OutputTokens != 15 || cv.Attempts != 2 {
+	if cv.Usage != (state.Usage{InputTokens: 150, OutputTokens: 15, CostUSD: 1.5}) || cv.Attempts != 2 {
 		t.Errorf("convergence usage %+v after %d attempts", cv.Usage, cv.Attempts)
 	}
 	if st.Rounds[0].Step(state.ClaudeAudit).SessionID != rec.reqs[0].SessionID && st.Rounds[0].Step(state.ClaudeAudit).SessionID != rec.reqs[1].SessionID {
@@ -222,11 +234,15 @@ func TestSessionsUsageAndReport(t *testing.T) {
 	for _, want := range []string{
 		"## Permission denials and refused commands", "- Round 1, claude-audit: Bash: git push origin HEAD",
 		"| 1 | convergence | Claude Code - claude-opus-6-0 | 2 |", "$1.50",
+		"- Round 1, convergence: Try 1's answer was sent back: audited_commit is ",
 		`The log headings say "Claude Code - claude-opus-6-0", from the model the CLI reported (claude-opus-6-0), but [claude] label is "Claude Code - Claude Opus 5.5".`,
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report lacks %q:\n%s", want, report)
 		}
+	}
+	if n := strings.Count(report, "The log headings say"); n != 1 {
+		t.Errorf("the label note must appear once, not %d times", n)
 	}
 	if !strings.Contains(w.read("local-only_logs.md"), "### Claude Code - claude-opus-6-0 — ") {
 		t.Error("the log heading must use the reported model")

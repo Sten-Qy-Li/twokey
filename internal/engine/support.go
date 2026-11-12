@@ -353,9 +353,20 @@ func (e *engine) report() string {
 	b.WriteString("\n## Time and cost per step\n\n| Round | Step | Agent | Tries | Time | Tokens in/out | Cost (Claude's estimate) |\n|---|---|---|---|---|---|---|\n")
 	b.WriteString(steps.String())
 	fmt.Fprintf(&b, "| | **Total** | | | %s | %s | %s |\n", duration(e.st.Started, e.lastFinish()), tokens(total), cost(total))
-	section("Notes", append(notes, e.st.Notes...))
+	section("Notes", bullets(append(notes, e.st.Notes...)))
 	section("Log entries to read for detail", headings)
 	return b.String()
+}
+
+// bullets makes notes a Markdown list, each note once.
+func bullets(notes []string) []string {
+	var out []string
+	for _, n := range notes {
+		if l := "- " + n; !slices.Contains(out, l) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // labelNote flags a log heading that differs from the configured label

@@ -126,9 +126,16 @@ func (e *engine) runAgent(ctx context.Context, r *state.Round, s *state.Step, st
 			all = append(all, fmt.Sprintf("attempt %d: %s", req.Attempt, p))
 		}
 		try++
-		if s.SessionID == "" {
-			break // nothing to resume
+		if s.SessionID == "" || try > 2 {
+			break // nothing to resume, or no tries left
 		}
+		ui.Line(e.o.Out, ui.Warn, fmt.Sprintf("twokey can't use %s's answer. It gets one more try in the same session:", s.Name))
+		for _, p := range probs {
+			ui.Detail(e.o.Out, "- "+p)
+		}
+		e.update(func() {
+			s.Notes = append(s.Notes, fmt.Sprintf("Try %d's answer was sent back: %s", req.Attempt, strings.Join(probs, "; ")))
+		})
 		req.Resume, req.Prompt = s.SessionID, retryPrompt(probs)
 	}
 	return fail(strings.Join(all, "\n"), PauseAgentFailed)
@@ -139,7 +146,11 @@ func (e *engine) runAgent(ctx context.Context, r *state.Round, s *state.Step, st
 func (e *engine) attempt(ctx context.Context, r *state.Round, s *state.Step, step string, req runner.Request) runner.Result {
 	cctx, cancel := context.WithTimeout(ctx, time.Duration(e.timeoutMinutes(step))*time.Minute)
 	defer cancel()
-	done := e.beat.add(r.N, s.Name, e.o.Now())
+	name := s.Name
+	if req.Attempt > 1 {
+		name = fmt.Sprintf("%s (try %d)", s.Name, req.Attempt)
+	}
+	done := e.beat.add(r.N, name, e.o.Now())
 	res := e.o.Runner.Run(cctx, req)
 	done()
 	e.cleanupDocker(ctx, r, s)
@@ -156,13 +167,27 @@ func (e *engine) recordRun(s *state.Step, req runner.Request, res runner.Result)
 			s.Model = res.Model
 		}
 		u := state.Usage{InputTokens: res.Usage.InputTokens, OutputTokens: res.Usage.OutputTokens, CostUSD: res.Usage.CostUSD}
-		if req.Resume != "" && s.Agent == "claude" {
-			s.Usage = s.Usage.Minus(s.SessionUsage) // Claude reports the session's whole total
-		}
-		s.Usage, s.SessionUsage = s.Usage.Plus(u), u
+		s.Usage, s.SessionUsage = addRun(s.Usage, s.SessionUsage, u, res.Usage.CallInputTokens, req.Resume != "" && s.Agent == "claude")
 		s.Denials = append(s.Denials, res.Denials...)
 		s.Notes = append(s.Notes, res.Notes...)
 	})
+}
+
+// addRun adds one run's usage to a step's and to its session's (D53). A
+// resumed Claude session usually reports the session's totals, earlier
+// calls included: then the run's share is the new total minus the
+// session's earlier one. If the total is smaller than the earlier total
+// plus this call's input, Claude didn't restore the earlier calls, and
+// the run's numbers are its own.
+func addRun(step, session, run state.Usage, callInput int64, resumedClaude bool) (newStep, newSession state.Usage) {
+	switch {
+	case !resumedClaude:
+		return step.Plus(run), run
+	case run.InputTokens >= session.InputTokens+callInput:
+		return step.Minus(session).Plus(run), run
+	default:
+		return step.Plus(run), session.Plus(run)
+	}
 }
 
 // limitWait says until when to wait for a usage limit, and whether to

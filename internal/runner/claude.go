@@ -67,8 +67,11 @@ type ClaudeResult struct {
 		OutputTokens  int64 `json:"output_tokens"`
 	} `json:"usage"`
 	ModelUsage map[string]struct {
-		CostUSD      float64 `json:"costUSD"`
-		OutputTokens int64   `json:"outputTokens"`
+		CostUSD       float64 `json:"costUSD"`
+		InputTokens   int64   `json:"inputTokens"`
+		CacheRead     int64   `json:"cacheReadInputTokens"`
+		CacheCreation int64   `json:"cacheCreationInputTokens"`
+		OutputTokens  int64   `json:"outputTokens"`
 	} `json:"modelUsage"`
 	PermissionDenials []struct {
 		ToolName  string         `json:"tool_name"`
@@ -99,6 +102,23 @@ func (c ClaudeResult) Model() string {
 		return ""
 	}
 	return names[0]
+}
+
+// Totals returns the tokens and cost Claude reports. usage covers this call
+// alone. modelUsage and total_cost_usd cover the session: on a resume,
+// Claude usually restores the session's earlier totals and adds this call
+// to them (D53). Input counts cached tokens too.
+func (c ClaudeResult) Totals() Usage {
+	call := c.Usage.InputTokens + c.Usage.CacheCreation + c.Usage.CacheRead
+	u := Usage{InputTokens: call, OutputTokens: c.Usage.OutputTokens, CostUSD: c.CostUSD, CallInputTokens: call}
+	if len(c.ModelUsage) > 0 {
+		u.InputTokens, u.OutputTokens = 0, 0
+		for _, m := range c.ModelUsage {
+			u.InputTokens += m.InputTokens + m.CacheRead + m.CacheCreation
+			u.OutputTokens += m.OutputTokens
+		}
+	}
+	return u
 }
 
 // Denials lists the permission denials as "<tool>: <what>".
@@ -170,9 +190,7 @@ func (x *Real) claude(ctx context.Context, req Request) Result {
 	if out.SessionID != "" {
 		res.SessionID = out.SessionID
 	}
-	res.Model, res.Denials = out.Model(), out.Denials()
-	res.Usage = Usage{InputTokens: out.Usage.InputTokens + out.Usage.CacheCreation + out.Usage.CacheRead,
-		OutputTokens: out.Usage.OutputTokens, CostUSD: out.CostUSD}
+	res.Model, res.Denials, res.Usage = out.Model(), out.Denials(), out.Totals()
 	if res.Answer = out.Answer(); res.Answer != nil {
 		return res
 	}

@@ -107,7 +107,7 @@ func TestCodexServersOff(t *testing.T) {
 const claudeOK = `{"type":"result","subtype":"success","is_error":false,"duration_ms":91234,"num_turns":12,
 "result":"Done.","session_id":"6f1c-uuid","total_cost_usd":1.25,
 "usage":{"input_tokens":100,"cache_creation_input_tokens":2000,"cache_read_input_tokens":30000,"output_tokens":4000},
-"modelUsage":{"claude-haiku-5-5":{"costUSD":0.01,"inputTokens":10,"outputTokens":50},"claude-opus-5-5":{"costUSD":1.24,"inputTokens":90,"outputTokens":3950}},
+"modelUsage":{"claude-haiku-5-5":{"costUSD":0.01,"inputTokens":10,"outputTokens":50},"claude-opus-5-5":{"costUSD":1.24,"inputTokens":90,"cacheReadInputTokens":30000,"cacheCreationInputTokens":2000,"outputTokens":3950}},
 "permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"git push origin HEAD"}},{"tool_name":"WebFetch","tool_use_id":"t2","tool_input":{"url":"https://example.com","prompt":"x"}}],
 "structured_output":{"ok":true}}`
 
@@ -125,6 +125,21 @@ func TestClaudeResult(t *testing.T) {
 	r.IsError = true
 	if r.Answer() != nil {
 		t.Error("is_error means no answer")
+	}
+
+	// A resumed session, as Claude reported it in a real run: usage is the
+	// call, modelUsage and the cost are the session with its earlier call.
+	var resumed ClaudeResult
+	if err := jsonUnmarshal(`{"total_cost_usd":4.06,
+"usage":{"input_tokens":2,"cache_creation_input_tokens":20905,"cache_read_input_tokens":173456,"output_tokens":14843},
+"modelUsage":{"claude-opus-5-5":{"costUSD":4.06,"inputTokens":96,"cacheReadInputTokens":5247524,"cacheCreationInputTokens":194361,"outputTokens":72815}}}`, &resumed); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resumed.Totals(), (Usage{InputTokens: 5441981, OutputTokens: 72815, CostUSD: 4.06, CallInputTokens: 194363}); got != want {
+		t.Errorf("totals %+v, want %+v", got, want)
+	}
+	if got := (ClaudeResult{}).Totals(); got != (Usage{}) {
+		t.Errorf("no usage at all: %+v", got)
 	}
 }
 
@@ -218,7 +233,7 @@ func TestRealClaude(t *testing.T) {
 	if r.Problem != "" || string(r.Answer) != `{"ok":true}` || r.SessionID != "6f1c-uuid" || r.Model != "claude-opus-5-5" {
 		t.Fatalf("result %+v", r)
 	}
-	if r.Usage.CostUSD != 1.25 || r.Usage.OutputTokens != 4000 || r.Usage.InputTokens != 32100 || len(r.Denials) != 2 {
+	if r.Usage != (Usage{InputTokens: 32100, OutputTokens: 4000, CostUSD: 1.25, CallInputTokens: 32100}) || len(r.Denials) != 2 {
 		t.Errorf("usage %+v, denials %v", r.Usage, r.Denials)
 	}
 	args := strings.Join(f.got.Args, " ")

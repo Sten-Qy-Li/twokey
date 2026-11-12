@@ -54,6 +54,9 @@ type Usage struct {
 	InputTokens  int64
 	OutputTokens int64
 	CostUSD      float64 // Claude's estimate; Codex reports none
+	// CallInputTokens is the input of this call alone, when the CLI also
+	// reports totals that may include earlier calls (Claude, D53).
+	CallInputTokens int64
 }
 
 // Runner runs agent steps.

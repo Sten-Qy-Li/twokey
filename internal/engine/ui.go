@@ -25,13 +25,15 @@ const (
 // UI is how the engine talks to the owner. Stepper mode asks at every
 // step; autopilot never asks.
 type UI interface {
-	// Before is called before an agent step or a push.
+	// Before is called before an agent step, the checks, a fast-forward
+	// or a push. In stepper mode it is the one stop between steps (D56).
 	Before(what string, prompts []string) Choice
 	// Edited is called after the editor closed, before the edited prompt
 	// is used. false = quit.
 	Edited(path string) bool
-	// After shows a step's result. false = quit.
-	After(text string) bool
+	// After shows a step's result. It doesn't wait: the next step's Before
+	// or a question does.
+	After(text string)
 	// Decide asks for a decision on a needs_decision finding: an option,
 	// the owner's own text, or "drop". quit = stop and resume later.
 	Decide(f schema.MergedFinding) (answer string, quit bool)
@@ -104,13 +106,8 @@ func (t *TextUI) Edited(path string) bool {
 }
 
 // After implements UI.
-func (t *TextUI) After(text string) bool {
+func (t *TextUI) After(text string) {
 	fmt.Fprintln(t.Out, strings.TrimRight(text, "\n"))
-	if t.Autopilot {
-		return true
-	}
-	a, err := t.ask(fmt.Sprintf("%-7s Press Enter to go on (q = quit): ", ""))
-	return err == nil && a != "q"
 }
 
 func (t *TextUI) showFinding(f schema.MergedFinding) {

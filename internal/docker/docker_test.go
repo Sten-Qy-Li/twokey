@@ -69,6 +69,9 @@ func TestCleanupRemovesOnlyThePrefix(t *testing.T) {
 	if !contains(f.ran, "compose -p "+prefix+"web down --volumes --remove-orphans") {
 		t.Errorf("the Compose project wasn't taken down: %v", f.ran)
 	}
+	if !contains(f.ran, "rm --force --volumes "+prefix+"web-app-1") {
+		t.Errorf("a container's unnamed volumes must go with it: %v", f.ran)
+	}
 }
 
 func TestCleanupWithoutDocker(t *testing.T) {
@@ -81,7 +84,7 @@ func TestCleanupWithoutDocker(t *testing.T) {
 
 func TestCleanupReportsFailures(t *testing.T) {
 	f := newFake()
-	f.fail = map[string]bool{"rm --force " + prefix + "web-app-1": true, "volume ls --format {{.Name}}": true}
+	f.fail = map[string]bool{"rm --force --volumes " + prefix + "web-app-1": true, "volume ls --format {{.Name}}": true}
 	removed, err := Cleaner{R: f}.Cleanup(t.Context(), prefix)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("can't remove container %sweb-app-1: error: rm", prefix)) ||
 		!strings.Contains(err.Error(), "can't list volumes") {

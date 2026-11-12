@@ -516,6 +516,32 @@ func TestStepperQuitAndResume(t *testing.T) {
 	}
 }
 
+// In stepper mode the one stop between steps is the next step's prompt
+// (D56). The checks after a fix have their own; quitting there and
+// resuming runs them.
+func TestStepperStopsOnceBetweenSteps(t *testing.T) {
+	w := newWorld(t)
+	w.stepper = true
+	w.cfg.Verify.Commands = []string{"git --version"}
+	w.oneFinding(1, "")
+	w.fixes(1, "fixed.txt", "R1-M-01")
+	w.cleanRound(2)
+	// Enter at the audits, the convergence and the fix, then q at the checks.
+	w.expect(w.start("\n\n\nq\n"), engine.ExitDone)
+	if r := w.state().Rounds[0]; !r.IsDone(state.Fix) || r.Verified {
+		t.Fatalf("the run must stop before the checks: fix done %v, verified %v", r.IsDone(state.Fix), r.Verified)
+	}
+	w.outHas("Next: round 1: the checks (git --version)")
+	if strings.Contains(w.out.String(), "Press Enter to go on") {
+		t.Errorf("a result must not wait for an Enter of its own:\n%s", w.out.String())
+	}
+	// Enter at the checks, the push, and round 2's audits and convergence.
+	w.expect(w.resume("\n\n\n\n", 0), engine.ExitDone)
+	if st := w.state(); st.Status != state.Converged || !st.Rounds[0].Verified {
+		t.Errorf("status %s", st.Status)
+	}
+}
+
 func TestPreflightAndLock(t *testing.T) {
 	w := newWorld(t)
 	w.repo.WriteFile(t, "notes.txt", "x")

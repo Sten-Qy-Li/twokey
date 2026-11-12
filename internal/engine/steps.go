@@ -375,9 +375,7 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 		tables = append(tables, fmt.Sprintf("%s (%s): %s\n%s", s.Name, a.Verdict, a.Summary, auditTable(a.Findings)))
 	}
 	e.update(func() { r.Published = true })
-	if !e.o.UI.After(strings.Join(tables, "\n") + "\nNext: convergence (Claude)") {
-		return e.quit()
-	}
+	e.o.UI.After(strings.Join(tables, "\n"))
 	return true
 }
 
@@ -412,9 +410,7 @@ func (e *engine) convergence(ctx context.Context, r *state.Round) bool {
 	g := e.decide(r)
 	text := fmt.Sprintf("convergence (%s): %s\n%s\nGate: %s", c.Verdict, c.Summary, mergedTable(c.Findings),
 		strings.TrimSpace(string(g.Action)+" "+strings.Join(g.IDs, ", ")))
-	if !e.o.UI.After(text) {
-		return e.quit()
-	}
+	e.o.UI.After(text)
 	return true
 }
 
@@ -477,9 +473,7 @@ func (e *engine) dispute(ctx context.Context, r *state.Round, ids []string) bool
 	for _, rc := range d.Rechecks {
 		lines = append(lines, fmt.Sprintf("  %s: %s", rc.ID, rc.Decision))
 	}
-	if !e.o.UI.After("dispute:\n" + strings.Join(lines, "\n")) {
-		return e.quit()
-	}
+	e.o.UI.After("dispute:\n" + strings.Join(lines, "\n"))
 	return true
 }
 
@@ -632,10 +626,7 @@ func (e *engine) fixDone(ctx context.Context, r *state.Round, s *state.Step) boo
 	for _, n := range f.NotDone {
 		lines = append(lines, "  not done: "+n.ID+": "+n.Reason)
 	}
-	text := fmt.Sprintf("fix: %s\n%s\nNext: verify", plural(len(f.Commits), "commit"), strings.Join(lines, "\n"))
-	if !e.o.UI.After(text) {
-		return e.quit()
-	}
+	e.o.UI.After(fmt.Sprintf("fix: %s\n%s", plural(len(f.Commits), "commit"), strings.Join(lines, "\n")))
 	return true
 }
 
@@ -664,6 +655,10 @@ func (e *engine) checkCommits(ctx context.Context, r *state.Round, commits []str
 // verify runs the project's checks. A failure resumes the fix session
 // once with the output (SPEC section 8).
 func (e *engine) verify(ctx context.Context, r *state.Round) bool {
+	if cmds := e.cfg.Verify.Commands; len(cmds) > 0 &&
+		e.o.UI.Before(fmt.Sprintf("round %d: the checks (%s)", r.N, strings.Join(cmds, ", ")), nil) == Quit {
+		return e.quit()
+	}
 	failed, output := e.runChecks(ctx, r)
 	if failed == "" {
 		e.update(func() { r.Verified = true })

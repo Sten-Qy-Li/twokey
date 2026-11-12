@@ -168,7 +168,7 @@ Claude's result names the models in `modelUsage`; twokey takes the one with the 
 - A Claude session ID is a random version-4 UUID chosen by twokey and saved in `state.json` before the step starts (D8). A fresh try gets a new one, because Claude refuses an ID it already has.
 - All raw output (events, stdout, stderr, Codex's `-o` file and its schema file) goes to staging first, so a parallel auditor can't read the other's work in the run folder. It is published with the answer.
 - Tries are counted across resumes (`attempts` in `state.json` is no longer reset), so every try's files have their own names. The fake runner's `<step>.<attempt>.json` uses the same count.
-- Per step, `state.json` keeps tokens and Claude's cost estimate; a resumed Claude session replaces its own earlier numbers, because Claude reports the session's whole total.
+- Per step, `state.json` keeps tokens and Claude's cost estimate; a resumed Claude session replaces its own earlier numbers, because Claude reports the session's whole total. (Corrected by D53: that holds for the cost, not for `usage`.)
 
 ## D46. Usage limits
 The wording comes from the sources: Codex says "You’ve hit your usage limit. … Try again at 3:45 PM." (or a date, or "later"), Claude says "You've hit your session limit · resets 3:45pm" (or weekly, or a weekday). The default patterns add `hit your`, since Claude's message doesn't contain "usage limit". Patterns are checked only when a step failed. A step waits at most 3 times. A fix that changed the tree or committed before its limit pauses instead of starting again.
@@ -190,3 +190,15 @@ Requested by the owner after the first smoke test. Codex audits use `git ls-remo
 
 ## D52. Live web search, and URLs opened directly (2026-11-12)
 New key `[codex] web_search`: `""` keeps Codex's default (cached results), otherwise twokey passes `-c web_search="<mode>"`. The owner turned on `"live"` for the course project, so audits see the current versions of the pages the requirements list. Codex's web search is hosted, so the sandbox's TLS problem (D50) doesn't affect it. The preamble also says to open the URLs listed in the requirements file directly, not through search results: a search result can be an older or different page.
+
+## D53. Claude's tokens on a resumed session (2026-11-12)
+Found in the first real run, a rehearsal on a copy of the owner's project. In Claude's result, `usage` covers only the call that just ended, while `modelUsage` and `total_cost_usd` cover the session. On a resume, Claude restored the session's earlier totals and added the new call, so the cost was right but the tokens (taken from `usage`) showed only the second call: about 194 thousand input tokens instead of 5.4 million. twokey now takes tokens from `modelUsage` (all models, cached tokens included), like the cost. A resumed call counts as "totals restored" when the reported input is at least the session's earlier input plus this call's own input (`usage`). Then only the difference is added; otherwise the numbers are this call's alone. Claude restores the totals only for the project's most recent session, so this case can happen.
+
+## D54. An answer sent back is shown (2026-11-12)
+In the same run, two answers broke twokey's rules (an audit finding merged into two findings; "IDs" like `R1-M-04 (part)` under not done). twokey sent them back once, as designed, but the screen only showed the heartbeat restart at 0 minutes. Now a `[WARN]` lists the reasons, the heartbeat says `(try 2)`, and the step's notes keep the reasons for the report. The report's notes are now a list, each note once.
+
+## D55. Containers go with their unnamed volumes (2026-11-12)
+In the same run, an agent's PostgreSQL container left an unnamed volume behind. The agent's own `docker volume rm <hash>` was blocked by Claude's permission check, because nothing showed the volume was the agent's, and twokey's prefix cleanup can't see unnamed volumes. twokey now removes containers with `docker rm --force --volumes`, and the preamble tells agents to remove containers with their unnamed volumes (`docker run --rm`, `docker rm -f -v`, `docker compose down -v`). twokey still never removes a volume without its prefix.
+
+## D56. One stop between steps in stepper mode (2026-11-12)
+Stepper mode used to wait twice between steps: "Press Enter to go on" after a result, then "Enter = run" before the next step. The rehearsal showed that the first stop adds nothing, because the second also offers `q`. A result is now shown without waiting, and the next step's prompt (or a question for the owner) is the stop. The checks after a fix, which had no prompt of their own, now get one, so the owner can still stop between the fix and the checks.

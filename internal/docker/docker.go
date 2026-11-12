@@ -43,7 +43,7 @@ func (c Cleaner) Cleanup(ctx context.Context, prefix string) ([]string, error) {
 		{"Compose project", []string{"compose", "ls", "--all", "--quiet"},
 			func(n string) []string { return []string{"compose", "-p", n, "down", "--volumes", "--remove-orphans"} }},
 		{"container", []string{"ps", "--all", "--format", "{{.Names}}"},
-			func(n string) []string { return []string{"rm", "--force", n} }},
+			func(n string) []string { return []string{"rm", "--force", "--volumes", n} }}, // with its unnamed volumes (D55)
 		{"network", []string{"network", "ls", "--format", "{{.Name}}"},
 			func(n string) []string { return []string{"network", "rm", n} }},
 		{"volume", []string{"volume", "ls", "--format", "{{.Name}}"},
