@@ -51,6 +51,8 @@ const (
 	PauseAgentFailed = "PAUSE_AGENT_FAILED"
 	PausePushFailed  = "PAUSE_PUSH_FAILED"
 	PauseInterrupted = "PAUSE_INTERRUPTED"
+	PauseDiverged    = "PAUSE_DIVERGED"        // the branch and [project] upstream diverged (D39)
+	PauseProtected   = "PAUSE_PROTECTED_MOVED" // a protected branch moved during an agent step (D40)
 )
 
 // Options configure a run.
@@ -267,6 +269,9 @@ func (e *engine) resolve(ctx context.Context) bool {
 	}
 
 	if e.st.Pause != nil {
+		if len(e.st.Pause.Protected) > 0 && !e.confirmProtected(ctx) {
+			return false
+		}
 		switch e.st.Pause.Reason {
 		case PauseAgentFailed:
 			for _, s := range r.Steps {
@@ -308,6 +313,8 @@ func (e *engine) loop(ctx context.Context) int {
 		r := e.st.Current()
 		var goOn bool
 		switch {
+		case !r.Synced:
+			goOn = e.sync(ctx, r)
 		case !r.Published:
 			goOn = e.audits(ctx, r)
 		case !r.IsDone(state.Convergence):
@@ -393,15 +400,17 @@ func (e *engine) quit() bool {
 // pause stops the run until the owner acts (SPEC section 10): it writes
 // pending.md and tells the owner what to do. It returns false.
 func (e *engine) pause(reason, msg, next, step string, ids []string) bool {
-	e.update(func() {
-		e.st.Status = state.Paused
-		e.st.Pause = &state.Pause{Reason: reason, Message: msg, Step: step, IDs: ids}
-	})
+	return e.pauseWith(&state.Pause{Reason: reason, Message: msg, Step: step, IDs: ids}, next)
+}
+
+func (e *engine) pauseWith(p *state.Pause, next string) bool {
+	e.update(func() { e.st.Status, e.st.Pause = state.Paused, p })
+	reason, msg := p.Reason, p.Message
 	var b strings.Builder
 	fmt.Fprintf(&b, "# twokey run %s is paused\n\n", e.st.RunID)
 	fmt.Fprintf(&b, "**Why:** %s\n\n%s\n\n", reason, msg)
-	if len(ids) > 0 {
-		fmt.Fprintf(&b, "**Findings:** %s\n\n", strings.Join(ids, ", "))
+	if len(p.IDs) > 0 {
+		fmt.Fprintf(&b, "**Findings:** %s\n\n", strings.Join(p.IDs, ", "))
 	}
 	fmt.Fprintf(&b, "**What twokey needs:** %s\n\n", next)
 	fmt.Fprintf(&b, "**To continue:** run `twokey resume` in the repository.\n")
@@ -517,6 +526,9 @@ func cleanOldScratch(root string, now time.Time, maxAge time.Duration) {
 }
 
 func short(sha string) string {
+	if sha == "" {
+		return "(none)"
+	}
 	if len(sha) > 12 {
 		return sha[:12]
 	}

@@ -82,6 +82,8 @@ func TestProblems(t *testing.T) {
 		{name: "log file outside repo", file: strings.Replace(minimal, "[project]\n", "[project]\nlog_file = \"../logs.md\"\n", 1), want: "[project] log_file must be a path inside the repository"},
 		{name: "run dir absolute", file: strings.Replace(minimal, "[project]\n", "[project]\nrun_dir = "+quote(abs)+"\n", 1), want: "[project] run_dir must be a folder inside the repository"},
 		{name: "marker two lines", file: strings.Replace(minimal, "[project]\n", "[project]\nlog_marker = \"a\\nb\"\n", 1), want: "[project] log_marker must be one line of text"},
+		{name: "upstream is branch", file: strings.Replace(minimal, "[project]\n", "[project]\nupstream = \"feature\"\n", 1), want: `[project] upstream must be another branch than branch (both are "feature"), or "" for off.`},
+		{name: "bad upstream", file: strings.Replace(minimal, "[project]\n", "[project]\nupstream = \"a..b\"\n", 1), want: `[project] upstream is not a valid branch name (got "a..b")`},
 		{name: "extra dir relative", file: strings.Replace(minimal, "[project]\n", "[project]\nextra_read_dirs = [\"slides\"]\n", 1), want: `[project] extra_read_dirs: "slides" must be a full path`},
 		{name: "mode", extra: "[loop]\nmode = \"auto\"\n", want: `[loop] mode must be "stepper" or "autopilot" (got "auto").`},
 		{name: "max rounds", extra: "[loop]\nmax_rounds = 0\n", want: "[loop] max_rounds must be a whole number from 1 to 20 (got 0)."},
@@ -131,6 +133,14 @@ func TestAllProblemsReported(t *testing.T) {
 	var probs Problems
 	if !errors.As(err, &probs) || len(probs) != 3 {
 		t.Fatalf("want 3 problems, got %#v", err)
+	}
+}
+
+// The upstream is usually a protected branch: twokey only reads it.
+func TestUpstreamMayBeProtected(t *testing.T) {
+	cfg, err := Parse([]byte(strings.Replace(minimal, "[project]\n", "[project]\nupstream = \"main\"\n", 1)))
+	if err != nil || cfg.Project.Upstream != "main" {
+		t.Fatalf("got %v, %v", cfg, err)
 	}
 }
 

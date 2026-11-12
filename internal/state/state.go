@@ -71,6 +71,7 @@ type Round struct {
 	N         int     `json:"n"`
 	Commit    string  `json:"commit"`     // the commit both audits audit
 	RemoteSHA string  `json:"remote_sha"` // <remote>/<branch> when the round started
+	Synced    bool    `json:"synced"`     // the round's start caught up with [project] upstream (SPEC section 3)
 	Steps     []*Step `json:"steps"`
 	Published bool    `json:"published"` // audits copied out of staging and logged
 	Gate      *Gate   `json:"gate,omitempty"`
@@ -87,6 +88,10 @@ type Pause struct {
 	Message string   `json:"message"`
 	Step    string   `json:"step,omitempty"`
 	IDs     []string `json:"ids,omitempty"`
+	// Protected holds the protected branches that moved on the remote
+	// during the step, with their new SHAs. Resume asks the owner to
+	// confirm them (DECISIONS.md D40).
+	Protected map[string]string `json:"protected,omitempty"`
 }
 
 // State is a whole run.
@@ -100,11 +105,12 @@ type State struct {
 	Remote        string            `json:"remote"`
 	Status        string            `json:"status"`
 	Pause         *Pause            `json:"pause,omitempty"`
-	ProtectedSHAs map[string]string `json:"protected_shas"`
-	LogHash       string            `json:"log_hash"` // what the log file must hash to now
+	ProtectedSHAs map[string]string `json:"protected_shas"` // the SHAs twokey last accepted (D40)
+	LogHash       string            `json:"log_hash"`       // what the log file must hash to now
 	Rounds        []*Round          `json:"rounds"`
 	Decisions     map[string]string `json:"decisions"`
 	Rulings       map[string]string `json:"rulings"`
+	Notes         []string          `json:"notes,omitempty"` // for the report
 }
 
 // Current returns the round in progress, or nil before round 1.
@@ -142,10 +148,13 @@ func (r *Round) Ensure(name, agent string) *Step {
 	return st
 }
 
-// IsDone reports whether the round's step finished.
+// IsDone reports whether the round's step finished: it answered, and
+// twokey published and logged the answer. A step can answer and then pause
+// at the check that follows; the run publishes and logs the answer when it
+// resumes (DECISIONS.md D41).
 func (r *Round) IsDone(name string) bool {
 	st := r.Step(name)
-	return st != nil && st.Status == Done
+	return st != nil && st.Status == Done && st.Result != "" && st.Heading != ""
 }
 
 // ReadOnly reports whether a step may not change the repository.

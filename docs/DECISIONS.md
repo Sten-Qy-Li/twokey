@@ -129,3 +129,22 @@ Per round a folder `r<N>` holds `<step>.json` (the answer), `<step>.<attempt>.js
 
 ## D38. Until M2, run and resume need --fake-agents
 The real Codex and Claude runners come in M2. Without `--fake-agents`, `twokey run` says so and exits with code 2, so nobody starts a real run by accident.
+
+## D39. The branch catches up with an upstream only by fast-forward (2026-11-12)
+The owner's workflow: twokey works on the owner's branch. Teammates' merge requests go into another branch, the upstream, at any time. The owner merges the branch into the upstream through a merge request with a merge commit, never squash. The branch catches up with the upstream only by fast-forward: no merge commits, no rebase, no force push.
+- New key `[project] upstream`, default `""` (off, as before). It may not equal `branch`; it may be a protected branch, because twokey only reads it.
+- Each round starts with a sync step. Equal or ahead: nothing. Behind: `git merge --ff-only`, then a push with the normal push rules. Diverged: `PAUSE_DIVERGED`, telling the owner to merge the branch into the upstream with a merge commit (a squash merge makes the divergence permanent); `resume` runs the sync again.
+- This is the one exception to "never merge or rebase automatically". A fast-forward can't lose work or rewrite history, and it is what the owner did by hand before each run.
+- The step runs at the start of each round, not during one: the round's commit must stay fixed while the agents work on it.
+- If the fast-forward's push fails, HEAD is already ahead of the remote branch, on the way to the upstream. The sync step accepts exactly that case on resume and pushes, so the owner doesn't have to push by hand.
+
+## D40. Protected branches: judged by when they moved (2026-11-12)
+D30 kept protected branches strict: any change was `PAUSE_INVARIANT`, which resumed only once the owner "undid what was wrong", and the push compared them with their preflight SHAs. With D39's workflow, a teammate's merge into the upstream during a run is expected and can't be undone, so the run got stuck for good. twokey can't tell a teammate's merge from an agent's push: the agents use the owner's git login. What it does know is when an agent was running.
+- **During an agent step** (between the snapshots around it): only the owner can judge it. If that is the only problem, pause with `PAUSE_PROTECTED_MOVED`, showing the branch, the old and new SHA, and the new commits with subject and author. Together with other problems, the pause stays `PAUSE_INVARIANT` and lists everything. Either way, `resume` asks the owner to confirm; only `y` counts, and no input keeps the run paused, as with decisions (D34). Then the new SHA is the baseline.
+- **Outside agent steps** (between steps or rounds, during verify, a push or a pause): no agent can have done it. twokey reads the protected branches before every agent step and after every push, notes any change in the terminal and the report, and takes it as the new baseline. So a teammate's merge between steps never pauses the run. The push no longer compares with the preflight SHAs.
+- The working branch and other refs are checked exactly as before (D20, D29, D30).
+- A heuristic could tell more cases apart (an agent can only push commits it has locally), but an agent can also push from a clone in its scratch folder, so twokey asks instead of guessing.
+- The fake runner's `teammate_push` takes an optional `teammate_branch`, so tests can move a protected branch.
+
+## D41. Resume publishes an answer that a check paused (2026-11-12)
+Found while planning D40. When the check after convergence, dispute or fix paused the run, the step's status was already "done", but its answer wasn't published or logged. On resume, the loop skipped the step. After convergence, the gate then ran on an empty answer and could report "converged" by mistake. Now a step counts as done only once its answer is published and logged. On resume, a step that answered but wasn't published isn't run again: twokey publishes and logs its answer, repeats the fix's checks on the branch, and goes on. An audit or step whose log entry already exists isn't logged twice. A failed check's retry of the fix session publishes and logs its new answer in place of the first.

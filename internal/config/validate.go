@@ -31,6 +31,13 @@ func (c *Config) Validate() Problems {
 			add("[project] protected_branches: %q %s", b, err)
 		}
 	}
+	if u := c.Project.Upstream; u != "" {
+		if err := checkBranch(u); err != nil {
+			add("[project] upstream %s", err)
+		} else if u == c.Project.Branch {
+			add("[project] upstream must be another branch than branch (both are %q), or \"\" for off.", u)
+		}
+	}
 	if !localPath(c.Project.LogFile) {
 		add("[project] log_file must be a path inside the repository, such as \"local-only_logs.md\" (got %q).", c.Project.LogFile)
 	}

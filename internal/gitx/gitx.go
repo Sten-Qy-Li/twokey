@@ -217,6 +217,23 @@ func (g Repo) Subject(ctx context.Context, sha string) (string, error) {
 	return g.Output(ctx, "log", "-1", "--format=%s", sha)
 }
 
+// LogLines describes the commits in head but not in base, newest first, at
+// most max of them: "<short SHA> <subject> (<author>)".
+func (g Repo) LogLines(ctx context.Context, base, head string, max int) ([]string, error) {
+	out, err := g.Output(ctx, "log", "--format=%h %s (%an)", "--max-count="+strconv.Itoa(max), base+".."+head)
+	if err != nil || out == "" {
+		return nil, err
+	}
+	return strings.Split(out, "\n"), nil
+}
+
+// MergeFFOnly fast-forwards the current branch to a commit. It never makes
+// a merge commit: git refuses when a fast-forward isn't possible.
+func (g Repo) MergeFFOnly(ctx context.Context, commit string) error {
+	_, err := g.Output(ctx, "merge", "--ff-only", "--quiet", commit)
+	return err
+}
+
 // Push pushes HEAD to one branch of the remote: no force, no push options.
 func (g Repo) Push(ctx context.Context, remote, branch string) error {
 	_, err := g.Output(ctx, "push", "--porcelain", remote, "HEAD:refs/heads/"+branch)

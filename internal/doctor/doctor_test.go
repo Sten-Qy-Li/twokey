@@ -186,6 +186,40 @@ func TestProblems(t *testing.T) {
 			code: 1,
 		},
 		{
+			name:  "upstream ahead",
+			setup: func(t *testing.T, p *project) { p.writeConfig(t, "upstream = \"main\"\n") },
+			want:  "[OK]    origin/feature is 1 commit ahead of origin/main.",
+			code:  0,
+		},
+		{
+			name: "upstream behind",
+			setup: func(t *testing.T, p *project) {
+				p.writeConfig(t, "upstream = \"main\"\n")
+				dir := p.Clone(t)
+				testutil.Git(t, dir, "merge", "--quiet", "--no-ff", "--no-edit", "origin/feature")
+				testutil.Git(t, dir, "push", "--quiet", "origin", "main")
+			},
+			want: "[OK]    origin/feature is 1 commit behind origin/main. twokey fast-forwards it when a round starts.",
+			code: 0,
+		},
+		{
+			name: "upstream diverged",
+			setup: func(t *testing.T, p *project) {
+				p.writeConfig(t, "upstream = \"main\"\n")
+				dir := p.Clone(t)
+				testutil.Git(t, dir, "commit", "--quiet", "--allow-empty", "-m", "teammate")
+				testutil.Git(t, dir, "push", "--quiet", "origin", "main")
+			},
+			want: "[WARN]  origin/feature and origin/main have diverged",
+			code: 0,
+		},
+		{
+			name:  "upstream missing",
+			setup: func(t *testing.T, p *project) { p.writeConfig(t, "upstream = \"nope\"\n") },
+			want:  "[FAIL]  origin/nope doesn't exist, but [project] upstream names it.",
+			code:  1,
+		},
+		{
 			name:  "no config",
 			setup: func(t *testing.T, p *project) { removeFile(t, p, "local-only_twokey.toml") },
 			want:  "[FAIL]  No config file:",

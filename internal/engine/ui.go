@@ -39,6 +39,9 @@ type UI interface {
 	Rule(f schema.MergedFinding, codexEvidence string) (ruling, note string, quit bool)
 	// Recurring asks "fix" or "drop" for a finding that keeps coming back.
 	Recurring(f schema.MergedFinding, lineage int) (ruling, note string, quit bool)
+	// Confirm shows a change to a protected branch and asks whether it was
+	// expected. Only an explicit yes counts.
+	Confirm(text string) bool
 }
 
 // TextUI asks at the terminal. With Autopilot set it doesn't wait between
@@ -163,6 +166,13 @@ func (t *TextUI) Recurring(f schema.MergedFinding, lineage int) (string, string,
 	t.showFinding(f)
 	fmt.Fprintf(t.Out, "  This problem came back %d times after being fixed (latest: recurs_of %s).\n", lineage, f.RecursOf)
 	return t.fixOrDrop()
+}
+
+// Confirm implements UI.
+func (t *TextUI) Confirm(text string) bool {
+	fmt.Fprintf(t.Out, "\n%s\n", strings.TrimRight(text, "\n"))
+	a, err := t.ask("  Was this change expected, for example a teammate's merge? Type y to go on; anything else keeps the run paused: ")
+	return err == nil && (strings.EqualFold(a, "y") || strings.EqualFold(a, "yes"))
 }
 
 func (t *TextUI) fixOrDrop() (string, string, bool) {

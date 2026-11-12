@@ -35,6 +35,7 @@ type Project struct {
 	Branch            string   `toml:"branch"`
 	Remote            string   `toml:"remote"`
 	ProtectedBranches []string `toml:"protected_branches"`
+	Upstream          string   `toml:"upstream"` // "" = off
 	LogFile           string   `toml:"log_file"`
 	LogMarker         string   `toml:"log_marker"`
 	RunDir            string   `toml:"run_dir"`

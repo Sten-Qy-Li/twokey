@@ -40,8 +40,10 @@ type Actions struct {
 	Push     bool              `json:"push"`      // push the branch (to break rules)
 	NoAnswer string            `json:"no_answer"` // end without an answer, with this problem
 	// TeammatePush makes a commit with this message in a separate clone of
-	// the remote and pushes it to the branch: someone else pushed.
-	TeammatePush string `json:"teammate_push"`
+	// the remote and pushes it to TeammateBranch (default: the current
+	// branch): someone else pushed.
+	TeammatePush   string `json:"teammate_push"`
+	TeammateBranch string `json:"teammate_branch"`
 }
 
 // Run plays one step.
@@ -134,7 +136,7 @@ func (f Fake) act(ctx context.Context, dir string, a Actions) ([]string, error) 
 		}
 	}
 	if a.TeammatePush != "" {
-		if err := teammatePush(ctx, repo, f.Git, a.TeammatePush); err != nil {
+		if err := teammatePush(ctx, repo, f.Git, a.TeammatePush, a.TeammateBranch); err != nil {
 			return nil, fmt.Errorf("teammate push: %w", err)
 		}
 	}
@@ -144,16 +146,17 @@ func (f Fake) act(ctx context.Context, dir string, a Actions) ([]string, error) 
 	return commits, nil
 }
 
-// teammatePush pushes a new commit to the current branch from a separate
-// clone of origin.
-func teammatePush(ctx context.Context, repo gitx.Repo, git proc.Runner, msg string) error {
+// teammatePush pushes a new commit to a branch (default: the current one)
+// from a separate clone of origin.
+func teammatePush(ctx context.Context, repo gitx.Repo, git proc.Runner, msg, branch string) error {
 	url, err := repo.RemoteURL(ctx, "origin")
 	if err != nil {
 		return err
 	}
-	branch, err := repo.CurrentBranch(ctx)
-	if err != nil {
-		return err
+	if branch == "" {
+		if branch, err = repo.CurrentBranch(ctx); err != nil {
+			return err
+		}
 	}
 	dir, err := os.MkdirTemp("", "twokey-teammate-*")
 	if err != nil {

@@ -63,8 +63,8 @@ Make sure git ignores the config file and the run folder. `twokey init` tells yo
 ## Safety
 
 - Agents never push. twokey pushes only the configured branch, never with force, and only after its checks pass.
-- If anyone else pushed to the branch during a round, twokey pauses. It never merges or rebases.
-- Protected branches are checked on the remote after every step.
+- If anyone else pushed to the branch during a round, twokey pauses. It never merges or rebases. The one exception is optional: with `upstream` set, it fast-forwards the branch to that branch when a round starts, and pauses if the two have diverged.
+- Protected branches are checked on the remote after every step. If one moved while an agent was running, twokey pauses until you confirm it was expected, for example a teammate's merge.
 - Agents get their own scratch folders, Docker name prefixes and port ranges. twokey removes each step's Docker resources afterwards.
 - Screen control and your real browser are off for the agents by default.
 

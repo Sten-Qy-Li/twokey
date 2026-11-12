@@ -62,6 +62,14 @@ func TestRoundSteps(t *testing.T) {
 		t.Error("Ensure must return the same step")
 	}
 	a.Status = Done
+	if r.IsDone(Fix) {
+		t.Error("a step that answered but wasn't published is not done")
+	}
+	a.Result = "fix.json"
+	if r.IsDone(Fix) {
+		t.Error("an answer without its log entry is not done")
+	}
+	a.Heading = "Claude Code - Claude Opus 5.5 — 2026-11-14T09:30:00Z"
 	if !r.IsDone(Fix) {
 		t.Error("IsDone")
 	}

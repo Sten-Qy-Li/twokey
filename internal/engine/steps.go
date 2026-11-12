@@ -49,6 +49,11 @@ func (e *engine) preflight(ctx context.Context) bool {
 		if err != nil || head != remote {
 			fail(fmt.Sprintf("HEAD must equal %s/%s after git fetch.", p.Remote, p.Branch), "push or pull until they match (twokey doctor shows how).")
 		}
+		if p.Upstream != "" {
+			if _, err := e.repo.RevParse(ctx, "refs/remotes/"+p.Remote+"/"+p.Upstream); err != nil {
+				fail(fmt.Sprintf("%s/%s doesn't exist after git fetch.", p.Remote, p.Upstream), "check [project] upstream, or set it to \"\" for off.")
+			}
+		}
 	}
 	req := e.cfg.Checkpoint.RequirementsFile
 	if !filepath.IsAbs(req) {
@@ -291,10 +296,12 @@ func (e *engine) maskTeammatePush(ctx context.Context, before invariant.Snapshot
 	after.Remote[b] = before.Remote[b]
 }
 
-// violations compares the snapshots around a step (SPEC section 8), plus
-// state.json against what twokey last wrote.
-func (e *engine) violations(ctx context.Context, before, after invariant.Snapshot, fix bool) []string {
+// checkStep compares the snapshots around an agent step (SPEC section 8),
+// plus state.json against what twokey last wrote. It pauses and returns
+// false if the step changed what it must not change.
+func (e *engine) checkStep(ctx context.Context, what string, before, after invariant.Snapshot, fix bool) bool {
 	e.maskTeammatePush(ctx, before, &after)
+	moved := e.movedProtected(before, &after)
 	var v []string
 	if fix {
 		v = invariant.AfterFix(before, after, e.st.Branch, nil)
@@ -304,13 +311,39 @@ func (e *engine) violations(ctx context.Context, before, after invariant.Snapsho
 	if h, err := logfile.Hash(filepath.Join(e.runDir, state.FileName)); err != nil || h != e.stateHash {
 		v = append(v, "twokey's file state.json was changed.")
 	}
-	return v
+	if len(v) == 0 && len(moved) == 0 {
+		return true
+	}
+	return e.stepViolated(ctx, what, v, before.Remote, moved)
 }
 
 func (e *engine) invariantFailed(what string, problems []string) bool {
 	msg := fmt.Sprintf("%s changed things it must not change:\n- %s", what, strings.Join(problems, "\n- "))
 	next := "Look at the changes and undo what the agent shouldn't have done. If you made the change yourself (for example, you edited the log), just resume."
 	return e.pause(PauseInvariant, msg, next, what, nil)
+}
+
+// finishStep publishes a step's answer and writes its log entry. It skips
+// what an earlier try already did, so a run that paused at the check after
+// the step carries on from there on resume (DECISIONS.md D41).
+func finishStep[T any](e *engine, r *state.Round, s *state.Step, entry func(T) string) (T, bool) {
+	var v T
+	if s.Result == "" {
+		if err := e.publish(r, s); err != nil {
+			return v, e.pause(PauseInvariant, "Can't publish "+s.Name+": "+err.Error(), "Check the run folder, then run twokey resume.", s.Name, nil)
+		}
+	}
+	data, err := os.ReadFile(s.Result)
+	if err == nil {
+		err = json.Unmarshal(data, &v)
+	}
+	if err != nil {
+		return v, e.pause(PauseInvariant, "Can't read the answer of "+s.Name+": "+err.Error(), "Check the run folder, then run twokey resume.", s.Name, nil)
+	}
+	if s.Heading == "" && !e.logStep(r, s, entry(v)) {
+		return v, false
+	}
+	return v, true
 }
 
 // audits runs the blind audits in parallel and publishes both results
@@ -333,7 +366,7 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 		if !ok {
 			return e.quit()
 		}
-		before, ok := e.snapshot(ctx)
+		before, ok := e.snapshotBefore(ctx)
 		if !ok {
 			return false
 		}
@@ -362,11 +395,8 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 			return false
 		}
 		after, ok := e.snapshot(ctx)
-		if !ok {
+		if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's blind audits", r.N), before, after, false) {
 			return false
-		}
-		if v := e.violations(ctx, before, after, false); len(v) > 0 {
-			return e.invariantFailed(fmt.Sprintf("Round %d's blind audits", r.N), v)
 		}
 		for i, s := range todo {
 			if problems[i] != "" {
@@ -388,7 +418,7 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 	var tables []string
 	for _, s := range ordered {
 		a := loadJSON[schema.AuditResult](s.Result)
-		if !e.logStep(r, s, a.LogEntry) {
+		if s.Heading == "" && !e.logStep(r, s, a.LogEntry) {
 			return false
 		}
 		tables = append(tables, fmt.Sprintf("%s (%s): %s\n%s", s.Name, a.Verdict, a.Summary, auditTable(a.Findings)))
@@ -403,29 +433,29 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 // convergence runs Claude's convergence step.
 func (e *engine) convergence(ctx context.Context, r *state.Round) bool {
 	s := r.Ensure(state.Convergence, "claude")
-	if _, err := e.prepare(r, s, schema.Convergence, nil); err != nil {
-		return e.pause(PauseAgentFailed, "Can't render the prompt: "+err.Error(), "Fix the template, then run twokey resume.", s.Name, nil)
-	}
-	prompts, ok := e.before(fmt.Sprintf("round %d: convergence (Claude)", r.N), []*state.Step{s})
-	if !ok {
-		return e.quit()
-	}
-	codex := loadJSON[schema.AuditResult](r.Step(state.CodexAudit).Result)
-	claude := loadJSON[schema.AuditResult](r.Step(state.ClaudeAudit).Result)
-	prior := e.priorMergedIDs(r)
-	answer, ok := e.readOnlyStep(ctx, r, s, schema.Convergence, prompts[s.Name], func(b []byte) []string {
-		var c schema.ConvergenceResult
-		if p := schema.Decode(schema.Convergence, b, &c); p != nil {
-			return p
+	if s.Status != state.Done {
+		if _, err := e.prepare(r, s, schema.Convergence, nil); err != nil {
+			return e.pause(PauseAgentFailed, "Can't render the prompt: "+err.Error(), "Fix the template, then run twokey resume.", s.Name, nil)
 		}
-		return schema.CheckConvergence(c, r.Commit, schema.IDPrefix(r.N, schema.ConvergenceID), codex, claude, prior)
-	})
-	if !ok {
-		return false
+		prompts, ok := e.before(fmt.Sprintf("round %d: convergence (Claude)", r.N), []*state.Step{s})
+		if !ok {
+			return e.quit()
+		}
+		codex := loadJSON[schema.AuditResult](r.Step(state.CodexAudit).Result)
+		claude := loadJSON[schema.AuditResult](r.Step(state.ClaudeAudit).Result)
+		prior := e.priorMergedIDs(r)
+		if !e.readOnlyStep(ctx, r, s, schema.Convergence, prompts[s.Name], func(b []byte) []string {
+			var c schema.ConvergenceResult
+			if p := schema.Decode(schema.Convergence, b, &c); p != nil {
+				return p
+			}
+			return schema.CheckConvergence(c, r.Commit, schema.IDPrefix(r.N, schema.ConvergenceID), codex, claude, prior)
+		}) {
+			return false
+		}
 	}
-	var c schema.ConvergenceResult
-	_ = json.Unmarshal(answer, &c)
-	if !e.logStep(r, s, c.LogEntry) {
+	c, ok := finishStep(e, r, s, func(c schema.ConvergenceResult) string { return c.LogEntry })
+	if !ok {
 		return false
 	}
 	g := e.decide(r)
@@ -437,66 +467,60 @@ func (e *engine) convergence(ctx context.Context, r *state.Round) bool {
 	return true
 }
 
-// readOnlyStep runs a step that may not change the repository, checks the
-// invariants and publishes the answer.
-func (e *engine) readOnlyStep(ctx context.Context, r *state.Round, s *state.Step, step, prompt string, check func([]byte) []string) ([]byte, bool) {
-	before, ok := e.snapshot(ctx)
+// readOnlyStep runs a step that may not change the repository and checks
+// the invariants. The caller publishes the answer.
+func (e *engine) readOnlyStep(ctx context.Context, r *state.Round, s *state.Step, step, prompt string, check func([]byte) []string) bool {
+	before, ok := e.snapshotBefore(ctx)
 	if !ok {
-		return nil, false
+		return false
 	}
-	answer, problem := e.runAgent(ctx, r, s, step, prompt, "", check)
+	_, problem := e.runAgent(ctx, r, s, step, prompt, "", check)
 	if ctx.Err() != nil {
 		e.stop("Stopped (Ctrl+C).")
-		return nil, false
+		return false
 	}
 	after, ok := e.snapshot(ctx)
-	if !ok {
-		return nil, false
-	}
-	if v := e.violations(ctx, before, after, false); len(v) > 0 {
-		return nil, e.invariantFailed(fmt.Sprintf("Round %d's %s step", r.N, s.Name), v)
+	if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's %s step", r.N, s.Name), before, after, false) {
+		return false
 	}
 	if problem != "" {
-		return nil, e.pause(PauseAgentFailed, fmt.Sprintf("%s gave no usable answer, even after one retry:\n%s", s.Name, problem),
+		return e.pause(PauseAgentFailed, fmt.Sprintf("%s gave no usable answer, even after one retry:\n%s", s.Name, problem),
 			"Look at the step's files in the run folder, then run twokey resume to try again.", s.Name, nil)
 	}
-	if err := e.publish(r, s); err != nil {
-		return nil, e.pause(PauseInvariant, "Can't publish "+s.Name+": "+err.Error(), "Check the run folder, then run twokey resume.", s.Name, nil)
-	}
-	return answer, true
+	return true
 }
 
 // dispute lets Codex re-check the findings convergence disputed.
 func (e *engine) dispute(ctx context.Context, r *state.Round, ids []string) bool {
 	s := r.Ensure(state.Dispute, "codex")
-	conv := loadJSON[schema.ConvergenceResult](r.Step(state.Convergence).Result)
-	var list []string
-	for _, m := range conv.Findings {
-		if slices.Contains(ids, m.ID) {
-			list = append(list, fmt.Sprintf("- %s (your %s) [%s %s] %s\n  Dispute reason: %s",
-				m.ID, strings.Join(m.MergedFrom, ", "), m.Severity, m.Kind, m.Title, m.DisputeReason))
+	if s.Status != state.Done {
+		conv := loadJSON[schema.ConvergenceResult](r.Step(state.Convergence).Result)
+		var list []string
+		for _, m := range conv.Findings {
+			if slices.Contains(ids, m.ID) {
+				list = append(list, fmt.Sprintf("- %s (your %s) [%s %s] %s\n  Dispute reason: %s",
+					m.ID, strings.Join(m.MergedFrom, ", "), m.Severity, m.Kind, m.Title, m.DisputeReason))
+			}
+		}
+		if _, err := e.prepare(r, s, schema.Dispute, map[string]string{"disputes": strings.Join(list, "\n")}); err != nil {
+			return e.pause(PauseAgentFailed, "Can't render the prompt: "+err.Error(), "Fix the template, then run twokey resume.", s.Name, nil)
+		}
+		prompts, ok := e.before(fmt.Sprintf("round %d: dispute re-check (Codex) of %s", r.N, strings.Join(ids, ", ")), []*state.Step{s})
+		if !ok {
+			return e.quit()
+		}
+		if !e.readOnlyStep(ctx, r, s, schema.Dispute, prompts[s.Name], func(b []byte) []string {
+			var d schema.DisputeResult
+			if p := schema.Decode(schema.Dispute, b, &d); p != nil {
+				return p
+			}
+			return schema.CheckDispute(d, ids)
+		}) {
+			return false
 		}
 	}
-	if _, err := e.prepare(r, s, schema.Dispute, map[string]string{"disputes": strings.Join(list, "\n")}); err != nil {
-		return e.pause(PauseAgentFailed, "Can't render the prompt: "+err.Error(), "Fix the template, then run twokey resume.", s.Name, nil)
-	}
-	prompts, ok := e.before(fmt.Sprintf("round %d: dispute re-check (Codex) of %s", r.N, strings.Join(ids, ", ")), []*state.Step{s})
+	d, ok := finishStep(e, r, s, func(d schema.DisputeResult) string { return d.LogEntry })
 	if !ok {
-		return e.quit()
-	}
-	answer, ok := e.readOnlyStep(ctx, r, s, schema.Dispute, prompts[s.Name], func(b []byte) []string {
-		var d schema.DisputeResult
-		if p := schema.Decode(schema.Dispute, b, &d); p != nil {
-			return p
-		}
-		return schema.CheckDispute(d, ids)
-	})
-	if !ok {
-		return false
-	}
-	var d schema.DisputeResult
-	_ = json.Unmarshal(answer, &d)
-	if !e.logStep(r, s, d.LogEntry) {
 		return false
 	}
 	var lines []string
@@ -581,19 +605,24 @@ func (e *engine) record(r *state.Round, m schema.MergedFinding, kind, answer, no
 // fix runs Claude's fix step and checks its commits (SPEC section 8).
 func (e *engine) fix(ctx context.Context, r *state.Round, ids []string) bool {
 	s := r.Ensure(state.Fix, "claude")
-	if _, err := e.prepare(r, s, schema.Fix, e.fixVars(r, ids)); err != nil {
-		return e.pause(PauseAgentFailed, "Can't render the prompt: "+err.Error(), "Fix the template, then run twokey resume.", s.Name, nil)
+	if s.Status != state.Done {
+		if _, err := e.prepare(r, s, schema.Fix, e.fixVars(r, ids)); err != nil {
+			return e.pause(PauseAgentFailed, "Can't render the prompt: "+err.Error(), "Fix the template, then run twokey resume.", s.Name, nil)
+		}
+		prompts, ok := e.before(fmt.Sprintf("round %d: fix (Claude) of %s", r.N, strings.Join(ids, ", ")), []*state.Step{s})
+		if !ok {
+			return e.quit()
+		}
+		if !e.runFix(ctx, r, s, ids, prompts[s.Name], "") {
+			return false
+		}
 	}
-	prompts, ok := e.before(fmt.Sprintf("round %d: fix (Claude) of %s", r.N, strings.Join(ids, ", ")), []*state.Step{s})
-	if !ok {
-		return e.quit()
-	}
-	return e.runFix(ctx, r, s, ids, prompts[s.Name], "")
+	return e.fixDone(ctx, r, s)
 }
 
 // runFix runs or resumes the fix session, then checks what it did.
 func (e *engine) runFix(ctx context.Context, r *state.Round, s *state.Step, ids []string, prompt, resume string) bool {
-	before, ok := e.snapshot(ctx)
+	before, ok := e.snapshotBefore(ctx)
 	if !ok {
 		return false
 	}
@@ -612,11 +641,8 @@ func (e *engine) runFix(ctx context.Context, r *state.Round, s *state.Step, ids 
 		return false
 	}
 	after, ok := e.snapshot(ctx)
-	if !ok {
+	if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's fix step", r.N), before, after, true) {
 		return false
-	}
-	if v := e.violations(ctx, before, after, true); len(v) > 0 {
-		return e.invariantFailed(fmt.Sprintf("Round %d's fix step", r.N), v)
 	}
 	if problem != "" {
 		return e.pause(PauseAgentFailed, fmt.Sprintf("The fix step gave no usable answer, even after one retry:\n%s", problem),
@@ -624,16 +650,28 @@ func (e *engine) runFix(ctx context.Context, r *state.Round, s *state.Step, ids 
 	}
 	var f schema.FixResult
 	_ = json.Unmarshal(answer, &f)
-	if desc, _ := e.repo.IsAncestor(ctx, r.Commit, after.Head); !desc {
+	if len(f.Commits) == 0 {
+		return e.noProgress(s)
+	}
+	return true
+}
+
+func (e *engine) noProgress(s *state.Step) bool {
+	return e.pause(PauseNoProgress, "The fix step made no commits.", "Look at the repository. Fix it yourself and commit, or run twokey resume to try the fix again.", s.Name, nil)
+}
+
+// fixDone checks the branch after a fix, then publishes and logs the
+// answer. It also runs on resume after a pause at the fix's checks.
+func (e *engine) fixDone(ctx context.Context, r *state.Round, s *state.Step) bool {
+	head, _ := e.repo.RevParse(ctx, "HEAD")
+	if desc, _ := e.repo.IsAncestor(ctx, r.Commit, head); !desc {
 		return e.invariantFailed(fmt.Sprintf("Round %d's fix step", r.N), []string{"HEAD no longer descends from the round's commit " + short(r.Commit) + "."})
 	}
-	if after.Head == r.Commit || len(f.Commits) == 0 {
-		return e.pause(PauseNoProgress, "The fix step made no commits.", "Look at the fix answer in the run folder. Fix it yourself and commit, or run twokey resume to try the fix again.", s.Name, nil)
+	if head == r.Commit {
+		return e.noProgress(s)
 	}
-	if err := e.publish(r, s); err != nil {
-		return e.pause(PauseInvariant, "Can't publish the fix answer: "+err.Error(), "Check the run folder, then run twokey resume.", s.Name, nil)
-	}
-	if !e.logStep(r, s, f.LogEntry) {
+	f, ok := finishStep(e, r, s, func(f schema.FixResult) string { return f.LogEntry })
+	if !ok {
 		return false
 	}
 	var lines []string
@@ -685,12 +723,13 @@ func (e *engine) verify(ctx context.Context, r *state.Round) bool {
 		return e.pause(PauseVerify, fmt.Sprintf("The check %q failed after the fix.", failed),
 			"Read verify.log in the run folder. Fix the problem yourself and commit, then run twokey resume.", "verify", nil)
 	}
-	e.update(func() { r.VerifyRetries++ })
+	// The second answer replaces the first: it is published and logged too.
+	e.update(func() { r.VerifyRetries, fs.Result, fs.Heading = r.VerifyRetries+1, "", "" })
 	ui.Line(e.o.Out, ui.Warn, fmt.Sprintf("The check %q failed. The fix session gets one more try.", failed))
 	prompt := fmt.Sprintf("The project's check `%s` failed after your fix. Its output ends with:\n\n```\n%s\n```\n\n"+
 		"Fix this and commit. Don't push. Then answer again with the JSON object: base_commit is still %s, and commits lists all your commits, oldest first.\n",
 		failed, tail(output, 60), r.Commit)
-	if !e.runFix(ctx, r, fs, r.Gate.IDs, prompt, fs.SessionID) {
+	if !e.runFix(ctx, r, fs, r.Gate.IDs, prompt, fs.SessionID) || !e.fixDone(ctx, r, fs) {
 		return false
 	}
 	if failed, _ = e.runChecks(ctx, r); failed != "" {
@@ -732,37 +771,13 @@ func (e *engine) runChecks(ctx context.Context, r *state.Round) (failed, output 
 // push pushes the branch after its checks (SPEC section 8, "Push").
 func (e *engine) push(ctx context.Context, r *state.Round) bool {
 	remote, branch := e.st.Remote, e.st.Branch
-	if e.o.UI.Before(fmt.Sprintf("push %s to %s/%s", short(e.headOr(ctx)), remote, branch), nil) == Quit {
+	head := e.headOr(ctx)
+	if e.o.UI.Before(fmt.Sprintf("push %s to %s/%s", short(head), remote, branch), nil) == Quit {
 		return e.quit()
 	}
-	if err := e.repo.Fetch(ctx, remote); err != nil {
-		return e.pause(PausePushFailed, "git fetch failed: "+err.Error(), "Check your network and login, then run twokey resume.", "push", nil)
-	}
-	now, err := e.repo.RevParse(ctx, "refs/remotes/"+remote+"/"+branch)
-	if err != nil || now != r.RemoteSHA {
-		return e.pause(PauseRemoteMoved, fmt.Sprintf("Someone pushed to %s/%s during this round (%s -> %s).", remote, branch, short(r.RemoteSHA), short(now)),
-			"Bring their commits into your branch yourself (twokey never merges or rebases), then run twokey resume.", "push", nil)
-	}
-	head, _ := e.repo.RevParse(ctx, "HEAD")
 	commits, _ := e.repo.NewCommits(ctx, r.Commit, head)
-	if err := e.repo.Push(ctx, remote, branch); err != nil {
-		return e.pause(PausePushFailed, "git push failed: "+err.Error(), "Check the error, then run twokey resume.", "push", nil)
-	}
-	shas, err := e.repo.LsRemoteBranches(ctx, remote, append([]string{branch}, e.cfg.Project.ProtectedBranches...))
-	if err != nil {
-		return e.pause(PausePushFailed, "Can't confirm the push: "+err.Error(), "Check the remote, then run twokey resume.", "push", nil)
-	}
-	var problems []string
-	if shas[branch] != head {
-		problems = append(problems, fmt.Sprintf("%s/%s is %s after the push, not %s.", remote, branch, short(shas[branch]), short(head)))
-	}
-	for b, sha := range e.st.ProtectedSHAs {
-		if shas[b] != sha {
-			problems = append(problems, fmt.Sprintf("Protected branch %s changed on the remote (%s -> %s).", b, short(sha), short(shas[b])))
-		}
-	}
-	if len(problems) > 0 {
-		return e.invariantFailed("The push", problems)
+	if !e.pushHead(ctx, r, "push") {
+		return false
 	}
 
 	var lines []string

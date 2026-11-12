@@ -329,7 +329,7 @@ func (e *engine) report() string {
 	section("For the owner and the team (external evidence)", external)
 	section("P3 items not fixed", p3)
 	fmt.Fprintf(&b, "\n## Decisions and rulings\n\n%s\n", e.decisionsText())
-	section("Notes", notes)
+	section("Notes", append(notes, e.st.Notes...))
 	section("Log entries to read for detail", headings)
 	return b.String()
 }

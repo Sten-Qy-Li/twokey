@@ -24,6 +24,7 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/paths"
 	"github.com/Sten-Qy-Li/twokey/internal/proc"
 	"github.com/Sten-Qy-Li/twokey/internal/ui"
+	"github.com/Sten-Qy-Li/twokey/internal/upstream"
 	"github.com/Sten-Qy-Li/twokey/internal/version"
 )
 
@@ -350,6 +351,10 @@ func (d *doctor) checkRemote(root string, p config.Project) {
 		}
 	}
 
+	if p.Upstream != "" {
+		d.checkUpstream(ctx, repo, p)
+	}
+
 	var found, missing []string
 	for _, b := range p.ProtectedBranches {
 		if _, ok, err := repo.LsRemoteBranch(ctx, p.Remote, b); err == nil && ok {
@@ -364,6 +369,31 @@ func (d *doctor) checkRemote(root string, p config.Project) {
 	if len(missing) > 0 {
 		d.warn(fmt.Sprintf("Protected branches not found on %s: %s", p.Remote, strings.Join(missing, ", ")),
 			"check [project] protected_branches.")
+	}
+}
+
+// checkUpstream shows how the branch stands to [project] upstream, after
+// git fetch (DECISIONS.md D39).
+func (d *doctor) checkUpstream(ctx context.Context, repo gitx.Repo, p config.Project) {
+	branch, up := p.Remote+"/"+p.Branch, p.Remote+"/"+p.Upstream
+	if _, err := repo.RevParse(ctx, "refs/remotes/"+up); err != nil {
+		d.fail(fmt.Sprintf("%s doesn't exist, but [project] upstream names it.", up), "check [project] upstream, or set it to \"\" for off.")
+		return
+	}
+	ahead, behind, err := repo.AheadBehind(ctx, "refs/remotes/"+branch, "refs/remotes/"+up)
+	if err != nil {
+		return // the branch itself is missing on the remote: reported above
+	}
+	rel := upstream.Classify(ahead, behind)
+	msg := upstream.Describe(rel, ahead, behind, branch, up)
+	switch rel {
+	case upstream.Behind:
+		d.ok(msg + " twokey fast-forwards it when a round starts.")
+	case upstream.Diverged:
+		d.warn(msg+" A run pauses at its start until they no longer diverge.",
+			fmt.Sprintf("merge %s into %s through a merge request with a merge commit (not squash).", p.Branch, p.Upstream))
+	default:
+		d.ok(msg)
 	}
 }
 

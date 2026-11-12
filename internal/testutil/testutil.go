@@ -71,6 +71,15 @@ func NewRepo(t *testing.T, branch string) Repo {
 	return r
 }
 
+// Clone makes a separate clone of the remote, as a teammate has, and
+// returns its folder.
+func (r Repo) Clone(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "teammate")
+	Git(t, filepath.Dir(dir), "clone", "--quiet", r.Remote, dir)
+	return dir
+}
+
 // WriteFile writes a file inside the clone, making folders as needed.
 func (r Repo) WriteFile(t *testing.T, rel, content string) {
 	t.Helper()
