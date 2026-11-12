@@ -258,7 +258,7 @@ func smokePrompt(file string, network bool, probes []probe) string {
 	b.WriteString("This is a smoke test by twokey, a tool that runs you in unattended steps. Do exactly the following, change nothing else, and answer with only the JSON object that the schema asks for. Nobody can answer questions.\n\n")
 	fmt.Fprintf(&b, "1. Create the file %s containing the text: ok\n   Set \"wrote\" to true if that worked.\n", file)
 	if network {
-		b.WriteString("2. Make one HTTP GET request to https://example.com/ (for example with curl or Invoke-WebRequest) and put the HTTP status code in \"http_status\". Use 0 if the request failed.\n")
+		b.WriteString("2. Make one HTTPS GET request to https://example.com/ and put the HTTP status code in \"http_status\". If curl or PowerShell can't make the request in your sandbox, use Node.js instead (for example node -e \"fetch('https://example.com/').then(r => console.log(r.status))\"). Use 0 if nothing worked, and say in \"note\" what you tried.\n")
 	} else {
 		b.WriteString("2. Don't use the network. Set \"http_status\" to 0.\n")
 	}
