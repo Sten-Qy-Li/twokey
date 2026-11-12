@@ -152,3 +152,32 @@ Found while planning D40. When the check after convergence, dispute or fix pause
 ## D42. The agents learn how the commit stands to the upstream; the report says when to merge (2026-11-12)
 - New placeholder `${upstream_status}`, used in the audit and convergence templates. The sync step (D39) records `<remote>/<upstream>` and how many commits the round's commit is ahead of it. The text says whether a deployment built from the upstream runs the audited commit. Both blind audits get the same text, so they judge checks against a live deployment the same way, instead of one calling a missing feature on the live site a bug and the other calling it "not deployed yet". Recording it in the round keeps the text the same for both audits, also after a resume, although the upstream may move during the round.
 - After a converged run, if the branch has commits the upstream lacks, the report ends with "Next: merge `<branch>` into `<upstream>` (merge commit, not squash). The next run fast-forwards.", and the terminal shows it. Only after a converged run: after max rounds, findings are left and the report already says to consider another round.
+
+## D43. How screen and browser control are turned off (2026-11-12, M2)
+Checked against Codex's source at tag `rust-v0.165.0` and `codex mcp list --json` on the owner's machine. On the owner's machine, Codex's screen and browser control come from the bundled plugins `browser@openai-bundled`, `computer-use@openai-bundled` and `unified-computer-use@openai-bundled`, and from the MCP servers `node_repl` (in the Codex config) and `cua_repl` (from a plugin).
+- Codex splits `-c` keys on every dot and keeps quote characters, so `-c 'plugins."browser@openai-bundled".enabled=false'` silently does nothing. The unquoted `-c plugins.browser@openai-bundled.enabled=false` works, because the IDs have no dots. Turning these plugins off also removes `cua_repl`.
+- `-c mcp_servers.<name>.enabled=false` works for a server that exists, but makes Codex fail ("invalid transport") for one that doesn't. So twokey runs `codex mcp list --json` once per run, with the plugin overrides, and turns off only the listed desktop servers.
+- Claude Code's computer use is a macOS research preview that isn't available with `-p`, so `--no-chrome` is all Claude needs. This replaces D10's plan to deny Claude's computer-use tools; `--disallowed-tools` isn't used.
+- `doctor --smoke` runs with the same arguments, so it shows that both CLIs accept them.
+
+## D44. Which model ran
+Claude's result names the models in `modelUsage`; twokey takes the one with the highest cost, because Claude Code may use a small model for side tasks. Codex's `--json` events never name the model (the source has no such field), so a Codex heading uses `[codex] model` if set, the reroute target if Codex reports a reroute, and otherwise `[codex] label`. The report's notes flag every heading that differs from the configured label (D14).
+
+## D45. Running a CLI: job objects, staging, counting tries
+- On Windows, twokey starts the agent suspended, puts it in a job object that kills its processes on close, and only then resumes it, so even its first child stays in the job. The thread is resumed with documented APIs (a thread snapshot, `OpenThread`, `ResumeThread`), not `NtResumeProcess`. When the agent exits, what it left running is killed. Elsewhere, a process group.
+- A Claude session ID is a random version-4 UUID chosen by twokey and saved in `state.json` before the step starts (D8). A fresh try gets a new one, because Claude refuses an ID it already has.
+- All raw output (events, stdout, stderr, Codex's `-o` file and its schema file) goes to staging first, so a parallel auditor can't read the other's work in the run folder. It is published with the answer.
+- Tries are counted across resumes (`attempts` in `state.json` is no longer reset), so every try's files have their own names. The fake runner's `<step>.<attempt>.json` uses the same count.
+- Per step, `state.json` keeps tokens and Claude's cost estimate; a resumed Claude session replaces its own earlier numbers, because Claude reports the session's whole total.
+
+## D46. Usage limits
+The wording comes from the sources: Codex says "You’ve hit your usage limit. … Try again at 3:45 PM." (or a date, or "later"), Claude says "You've hit your session limit · resets 3:45pm" (or weekly, or a weekday). The default patterns add `hit your`, since Claude's message doesn't contain "usage limit". Patterns are checked only when a step failed. A step waits at most 3 times. A fix that changed the tree or committed before its limit pauses instead of starting again.
+
+## D47. Timeouts
+An audit, convergence or dispute step that runs out of time gets one fresh try; a second timeout pauses with `PAUSE_TIMEOUT` (SPEC section 10 named the reason only for the fix). The fix pauses at once. For a fix that was cut short by a timeout or a limit, the check after the step accepts uncommitted changes, so the pause names the real cause and shows `git status`; pushes, protected branches, the log and twokey's files are still checked.
+
+## D48. doctor --smoke
+Each agent gets one small task in a fresh session: write a file in its scratch folder, make one HTTP request (Codex only, when `[codex] network` is on) and read the first 4 bytes of one file in each extra read folder; then a resumed call writes a second file. twokey checks the files on disk and compares the bytes itself, and checks that `git status` is unchanged. It uses the real runner with the real arguments, so it also shows that the schema options and the screen-and-browser-off options are accepted. The smoke test needs the config and both CLIs; other `[FAIL]` lines (such as a dirty tree) don't block it.
+
+## D49. Real runs are on
+D38 is replaced: `twokey run` and `resume` call the real CLIs unless `--fake-agents` is given. The owner's go-ahead is still needed before the first real run (CLAUDE.md). The CLI tests run only in folders that aren't repositories, so they can't start a real run.

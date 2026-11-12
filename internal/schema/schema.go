@@ -22,6 +22,7 @@ const (
 	Convergence = "convergence"
 	Dispute     = "dispute"
 	Fix         = "fix"
+	Smoke       = "smoke" // twokey doctor --smoke
 )
 
 // Finding is one problem an audit found.
@@ -100,6 +101,20 @@ type Done struct {
 type NotDone struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+}
+
+// SmokeResult is the answer to twokey doctor --smoke.
+type SmokeResult struct {
+	Wrote      bool        `json:"wrote"`
+	HTTPStatus int         `json:"http_status"`
+	Reads      []SmokeRead `json:"reads"`
+	Note       string      `json:"note"`
+}
+
+// SmokeRead is one file the smoke test asked an agent to read.
+type SmokeRead struct {
+	Path          string `json:"path"`
+	FirstBytesHex string `json:"first_bytes_hex"`
 }
 
 // FixResult is the fix step's answer.

@@ -53,7 +53,14 @@ const (
 	PauseInterrupted = "PAUSE_INTERRUPTED"
 	PauseDiverged    = "PAUSE_DIVERGED"        // the branch and [project] upstream diverged (D39)
 	PauseProtected   = "PAUSE_PROTECTED_MOVED" // a protected branch moved during an agent step (D40)
+	PauseUsageLimit  = "PAUSE_USAGE_LIMIT"
+	PauseTimeout     = "PAUSE_TIMEOUT"
 )
+
+// Cleaner removes the Docker resources a step left behind (SPEC section 9).
+type Cleaner interface {
+	Cleanup(ctx context.Context, prefix string) ([]string, error)
+}
 
 // Options configure a run.
 type Options struct {
@@ -70,6 +77,9 @@ type Options struct {
 	MaxRounds   int    // 0 = [loop] max_rounds
 	Autopilot   bool   // the mode recorded in state.json
 	Editor      string // command that opens a prompt for editing
+	Docker      Cleaner
+	Heartbeat   time.Duration                                   // how often to print running steps; 0 = every minute
+	Sleep       func(ctx context.Context, d time.Duration) bool // waits for a usage limit; false = stopped
 }
 
 type engine struct {
@@ -88,14 +98,24 @@ type engine struct {
 	// stateHash is the SHA-256 of the state.json twokey last wrote, so a
 	// change by an agent is caught although twokey rewrites the file
 	// during every step.
-	stateHash string
+	stateHash  string
+	beat       *heartbeat
+	dockerWarn sync.Once // the parallel audits share one warning
 }
 
 func newEngine(o Options) *engine {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
+	if o.Sleep == nil {
+		o.Sleep = sleep
+	}
+	if o.Heartbeat == 0 {
+		o.Heartbeat = time.Minute
+	}
+	o.Out = &lockedWriter{w: o.Out} // parallel steps print too
 	e := &engine{o: o, cfg: o.Cfg}
+	e.beat = &heartbeat{active: map[string]beatItem{}}
 	e.runRoot = filepath.Join(o.Root, o.Cfg.Project.RunDir)
 	e.repo = gitx.Repo{Dir: o.Root, R: o.Proc}
 	e.logPath = filepath.Join(o.Root, o.Cfg.Project.LogFile)
@@ -255,7 +275,11 @@ func (e *engine) resolve(ctx context.Context) bool {
 	r := e.st.Current()
 	rerun, fix := e.st.Interrupted()
 	for _, name := range rerun {
+		e.cleanupDocker(ctx, r, r.Step(name))
 		ui.Line(e.o.Out, ui.OK, name+" was interrupted. It runs again.")
+	}
+	if fix != nil {
+		e.cleanupDocker(ctx, r, fix)
 	}
 	head, _ := e.repo.RevParse(ctx, "HEAD")
 	status, _ := e.repo.Status(ctx)
@@ -273,10 +297,10 @@ func (e *engine) resolve(ctx context.Context) bool {
 			return false
 		}
 		switch e.st.Pause.Reason {
-		case PauseAgentFailed:
+		case PauseAgentFailed, PauseUsageLimit, PauseTimeout:
 			for _, s := range r.Steps {
 				if s.Status == state.Failed {
-					s.Status, s.Attempts, s.Error = state.Pending, 0, ""
+					s.Status, s.Error = state.Pending, "" // attempts keep counting, so raw output files stay apart
 				}
 			}
 		case PauseVerify:
@@ -306,6 +330,8 @@ func (e *engine) resolve(ctx context.Context) bool {
 
 // loop runs steps until the run stops, pauses or the owner quits.
 func (e *engine) loop(ctx context.Context) int {
+	stop := e.beat.run(e.o.Out, e.o.Heartbeat, e.o.Now)
+	defer stop()
 	for !e.broken {
 		if ctx.Err() != nil {
 			return e.stop("Stopped (Ctrl+C).")

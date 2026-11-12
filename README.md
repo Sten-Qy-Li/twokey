@@ -19,18 +19,20 @@ The control flow is ordinary code, not a prompt that promises to loop. twokey ch
 
 ## Status
 
-Early development. Working now:
+Early development, heading for v0.1 (stepper mode with real agents). Working now:
 
 | Command | What it does |
 |---|---|
 | `twokey init [--templates]` | Creates `local-only_twokey.toml` in the repository and checks that git ignores it. `--templates` copies the prompt templates for editing. |
-| `twokey doctor` | Checks git, both agent CLIs and their options, the config, the repository, Docker and notifications. |
-| `twokey run --fake-agents <folder>` | Runs the whole loop with scripted agents, in stepper mode or with `--autopilot`. |
+| `twokey doctor [--smoke]` | Checks git, both agent CLIs and their options, the config, the repository, Docker and notifications. `--smoke` makes small real calls to both agents to test the sandbox, resumes and folder access. |
+| `twokey run` | Runs the loop with Codex and Claude Code, in stepper mode or with `--autopilot`. `--fake-agents <folder>` plays scripted agents instead. |
 | `twokey resume` | Continues a paused or stopped run. |
+| `twokey status` | Shows the current run on one screen. |
+| `twokey report` | Rebuilds a run's report. |
 | `twokey render <step>` | Prints a step's prompt without running it, for tuning the templates. |
 | `twokey unlock` | Removes a stale lock. |
 
-Coming next: real Codex and Claude runs (`run` without `--fake-agents`, `doctor --smoke`, `status`, `report`), then autopilot polish and notifications. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
+Coming next: autopilot polish, notifications and keep-awake. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
 
 ## Install
 

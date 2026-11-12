@@ -1,6 +1,6 @@
 // Package doctor implements "twokey doctor": check that everything twokey
 // needs is in place, and say what to do about each problem (SPEC section 12).
-// Without --smoke it never calls an agent.
+// Only --smoke calls the agents.
 package doctor
 
 import (
@@ -37,6 +37,9 @@ type Options struct {
 	StagingRoot string // "" = paths.StagingRoot()
 	ScratchRoot string // "" = paths.ScratchRoot()
 	GOOS        string // "" = runtime.GOOS
+	// Smoke makes small real calls to both agents (doctor --smoke).
+	Smoke  bool
+	Launch func(context.Context, proc.TreeCmd) proc.TreeResult // "" = proc.RunTree; tests pass a fake
 }
 
 // The options twokey passes to each CLI (SPEC section 9, DECISIONS.md).
@@ -44,7 +47,7 @@ var (
 	codexExecFlags   = []string{"--json", "--output-schema", "--output-last-message", "--sandbox", "--cd", "--add-dir", "--config", "--model"}
 	codexResumeFlags = []string{"--json", "--output-schema", "--output-last-message", "--config", "--model"}
 	claudeFlags      = []string{"--print", "--output-format", "--json-schema", "--permission-mode", "--permission-prompts",
-		"--add-dir", "--resume", "--session-id", "--model", "--no-chrome", "--disallowed-tools"}
+		"--add-dir", "--resume", "--session-id", "--model", "--no-chrome", "--max-budget-usd"}
 )
 
 // The CLI versions twokey was last checked against (DECISIONS.md D3).
@@ -62,6 +65,7 @@ type doctor struct {
 	Options
 	ctx          context.Context
 	fails, warns int
+	found        map[string]bool // the agent CLIs found on PATH
 }
 
 // Run runs every check and returns the exit code: 1 if any check failed.
@@ -69,7 +73,7 @@ func Run(ctx context.Context, o Options) int {
 	if o.GOOS == "" {
 		o.GOOS = runtime.GOOS
 	}
-	d := &doctor{Options: o, ctx: ctx}
+	d := &doctor{Options: o, ctx: ctx, found: map[string]bool{}}
 	fmt.Fprintf(d.Out, "twokey doctor (twokey %s, %s/%s)\n", version.String(), runtime.GOOS, runtime.GOARCH)
 
 	d.section("Tools")
@@ -94,6 +98,19 @@ func Run(ctx context.Context, o Options) int {
 	d.checkFolders()
 	d.checkDocker()
 	d.checkNotify(cmds)
+
+	if o.Smoke {
+		switch {
+		case cfg == nil || root == "":
+			d.section("Smoke test (real calls)")
+			d.fail("The smoke test needs the repository and a valid config.", "fix the [FAIL] lines above, then run twokey doctor --smoke again.")
+		case !d.found["codex"] || !d.found["claude"]:
+			d.section("Smoke test (real calls)")
+			d.fail("The smoke test needs both agent CLIs.", "fix the [FAIL] lines above, then run twokey doctor --smoke again.")
+		default:
+			d.smoke(root, cfg)
+		}
+	}
 
 	fmt.Fprintln(d.Out)
 	switch {
@@ -198,6 +215,7 @@ func (d *doctor) loadConfig(root string) *config.Config {
 
 func (d *doctor) checkCodex(cfg *config.Config) {
 	path, ok := d.findCLI("Codex CLI", cfg.Codex.Command, "[codex] command")
+	d.found["codex"] = ok
 	if !ok {
 		return
 	}
@@ -225,6 +243,7 @@ func (d *doctor) checkCodex(cfg *config.Config) {
 
 func (d *doctor) checkClaude(cfg *config.Config) {
 	path, ok := d.findCLI("Claude Code", cfg.Claude.Command, "[claude] command")
+	d.found["claude"] = ok
 	if !ok {
 		return
 	}

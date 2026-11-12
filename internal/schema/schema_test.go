@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-var steps = []string{Audit, Convergence, Dispute, Fix}
+var steps = []string{Audit, Convergence, Dispute, Fix, Smoke}
 
 // Codex's --output-schema needs strict schemas (SPEC section 6), and the
 // schemas use only the keywords in DECISIONS.md D18.

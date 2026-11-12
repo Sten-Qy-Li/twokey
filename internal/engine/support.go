@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Sten-Qy-Li/twokey/internal/config"
 	"github.com/Sten-Qy-Li/twokey/internal/gate"
@@ -262,9 +263,7 @@ func counts(fs []schema.Finding) string {
 	return fmt.Sprintf("%d/%d/%d", n["P1"], n["P2"], n["P3"])
 }
 
-// report builds report.md (SPEC section 13). M1 has the outcome, the
-// rounds, the pushed commits, external evidence, open P3 items,
-// decisions, notes and the log headings; M2 and M3 add the rest.
+// report builds report.md (SPEC section 13).
 func (e *engine) report() string {
 	var b strings.Builder
 	cur := e.st.Current()
@@ -279,7 +278,9 @@ func (e *engine) report() string {
 	}
 
 	b.WriteString("## Rounds\n\n| Round | Commit | Codex P1/P2/P3 | Claude P1/P2/P3 | Confirmed blocking | Action |\n|---|---|---|---|---|---|\n")
-	var external, p3, notes, headings []string
+	var external, p3, notes, headings, disputes, denials []string
+	var steps strings.Builder
+	var total state.Usage
 	for _, r := range e.st.Rounds {
 		codex := loadJSON[schema.AuditResult](resultOf(r, state.CodexAudit))
 		claude := loadJSON[schema.AuditResult](resultOf(r, state.ClaudeAudit))
@@ -303,7 +304,20 @@ func (e *engine) report() string {
 			if s.Heading != "" {
 				headings = append(headings, fmt.Sprintf("- %s (round %d, %s)", s.Heading, r.N, s.Name))
 			}
+			for _, d := range s.Denials {
+				denials = append(denials, fmt.Sprintf("- Round %d, %s: %s", r.N, s.Name, d))
+			}
+			for _, n := range s.Notes {
+				notes = append(notes, fmt.Sprintf("Round %d, %s: %s", r.N, s.Name, n))
+			}
+			if n := e.labelNote(s); n != "" {
+				notes = append(notes, n)
+			}
+			fmt.Fprintf(&steps, "| %d | %s | %s | %d | %s | %s | %s |\n", r.N, s.Name, e.label(s.Agent, s.Model), s.Attempts,
+				duration(s.Started, s.Finished), tokens(s.Usage), cost(s.Usage))
+			total = total.Plus(s.Usage)
 		}
+		disputes = append(disputes, e.disputeLines(r)...)
 	}
 
 	b.WriteString("\n## Commits pushed\n\n")
@@ -330,9 +344,90 @@ func (e *engine) report() string {
 	section("For the owner and the team (external evidence)", external)
 	section("P3 items not fixed", p3)
 	fmt.Fprintf(&b, "\n## Decisions and rulings\n\n%s\n", e.decisionsText())
+	section("Disputes and how they ended", disputes)
+	if len(denials) > 0 {
+		denials = append(denials, "", "Claude's denials can become allow rules in the project's .claude/settings.json. Codex's refused commands come from its sandbox ([codex] sandbox).")
+	}
+	section("Permission denials and refused commands", denials)
+	b.WriteString("\n## Time and cost per step\n\n| Round | Step | Agent | Tries | Time | Tokens in/out | Cost (Claude's estimate) |\n|---|---|---|---|---|---|---|\n")
+	b.WriteString(steps.String())
+	fmt.Fprintf(&b, "| | **Total** | | | %s | %s | %s |\n", duration(e.st.Started, e.lastFinish()), tokens(total), cost(total))
 	section("Notes", append(notes, e.st.Notes...))
 	section("Log entries to read for detail", headings)
 	return b.String()
+}
+
+// labelNote flags a log heading that differs from the configured label
+// (D14): the model the CLI reported isn't the one the label names.
+func (e *engine) labelNote(s *state.Step) string {
+	if s.Model == "" {
+		return ""
+	}
+	configured := e.cfg.Codex.Label
+	key := "[codex] label"
+	if s.Agent == "claude" {
+		configured, key = e.cfg.Claude.Label, "[claude] label"
+	}
+	if got := e.label(s.Agent, s.Model); got != configured {
+		return fmt.Sprintf("The log headings say %q, from the model the CLI reported (%s), but %s is %q. Update the label if the model changed on purpose.", got, s.Model, key, configured)
+	}
+	return ""
+}
+
+// disputeLines says how each dispute of a round ended.
+func (e *engine) disputeLines(r *state.Round) []string {
+	if !r.IsDone(state.Dispute) {
+		return nil
+	}
+	var lines []string
+	for _, rc := range loadJSON[schema.DisputeResult](r.Step(state.Dispute).Result).Rechecks {
+		end := "Codex withdrew it"
+		if rc.Decision == "maintain" {
+			end = "Codex maintained it"
+			if ruling := e.st.Rulings[rc.ID]; ruling != "" {
+				end += "; the owner ruled " + ruling
+			}
+		}
+		lines = append(lines, fmt.Sprintf("- %s (round %d): %s", rc.ID, r.N, end))
+	}
+	return lines
+}
+
+func (e *engine) lastFinish() time.Time {
+	var last time.Time
+	for _, r := range e.st.Rounds {
+		for _, s := range r.Steps {
+			if s.Finished.After(last) {
+				last = s.Finished
+			}
+		}
+	}
+	return last
+}
+
+func duration(start, end time.Time) string {
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return "-"
+	}
+	d := end.Sub(start).Round(time.Minute)
+	if d < time.Hour {
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%d h %02d min", int(d.Hours()), int(d.Minutes())%60)
+}
+
+func tokens(u state.Usage) string {
+	if u.InputTokens == 0 && u.OutputTokens == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d / %d", u.InputTokens, u.OutputTokens)
+}
+
+func cost(u state.Usage) string {
+	if u.CostUSD == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("$%.2f", u.CostUSD)
 }
 
 func resultOf(r *state.Round, name string) string {

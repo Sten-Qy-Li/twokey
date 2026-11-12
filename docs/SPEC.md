@@ -233,12 +233,15 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 **General**
 - Find the executables with `exec.LookPath`. On Windows, a CLI may be a `.cmd` shim (on the development machine both are real `.exe` files).
 - **Always send the prompt through stdin**, never as an argument. This avoids Windows command-line length limits and the quoting problems of `.cmd` shims. (Claude caps piped stdin at 10 MB, which is far more than any prompt.)
-- Write stdout and stderr straight to files in the run folder, not pipes, so two parallel processes can't block each other. All text is UTF-8.
-- Start each agent in its own Windows **job object** that kills its processes when the job closes. Killing the job ends the agent and every process it started, and the children die even if twokey itself crashes. On other systems, use a process group. A job object doesn't stop Docker containers, because the Docker daemon runs them; see "Scratch, containers and ports".
+- Write stdout and stderr straight to files, not pipes, so two parallel processes can't block each other. All text is UTF-8. The files go to the staging folder first (see "Blindness"), named `r<round>-<step>.<try>.<kind>`, and are copied into the run folder with the answer: `r1/codex-audit.1.events.jsonl`, `r1/claude-audit.2.stdout.json`, `*.stderr.log`. Tries are counted across resumes, so no try overwrites another's files (D45).
+- Start each agent in its own Windows **job object** that kills its processes when the job closes. Killing the job ends the agent and every process it started, and the children die even if twokey itself crashes. twokey starts the agent suspended and lets it run only once it is in the job, so not even its first child can escape. When the agent exits, anything it left running is killed too. On other systems, use a process group. A job object doesn't stop Docker containers, because the Docker daemon runs them; see "Scratch, containers and ports".
 - Print a heartbeat line every 60 s while steps run, e.g. `[..] round 2: codex-audit 14 min, claude-audit 11 min`.
+- **Which model ran** (D44): Claude reports it as the keys of `modelUsage`; twokey takes the one with the highest cost. Codex's `--json` events never name the model, so a Codex log heading uses `[codex] model` when it is set, the model Codex reroutes to when it says so, and otherwise `[codex] label`. The report flags a heading that differs from the configured label.
 - While a run is active, ask Windows not to sleep (`SetThreadExecutionState` through `golang.org/x/sys/windows`), and release that at the end.
 
-**Screen and browser control** are off by default for both agents (`desktop_tools = false`): no computer use, and no control of the owner's real browser with their logins. Agents may still run headless test browsers, such as Playwright with a throwaway profile in their scratch folder. `desktop_tools = true` turns screen and browser control back on for that agent. The exact arguments are checked with `doctor --smoke` (D10).
+**Screen and browser control** are off by default for both agents (`desktop_tools = false`): no computer use, and no control of the owner's real browser with their logins. Agents may still run headless test browsers, such as Playwright with a throwaway profile in their scratch folder. `desktop_tools = true` turns screen and browser control back on for that agent. The exact arguments are checked with `doctor --smoke` (D10, D43):
+- Codex: `-c plugins.<id>.enabled=false` for the bundled plugins `browser@openai-bundled`, `computer-use@openai-bundled` and `unified-computer-use@openai-bundled`, plus `-c mcp_servers.<name>.enabled=false` for the MCP servers `node_repl` and `cua_repl` when `codex mcp list --json` shows them enabled. Codex splits `-c` keys on dots and keeps quotes, so the plugin IDs are written unquoted. An override for an MCP server that isn't configured makes Codex fail ("invalid transport"), which is why twokey asks first, once per run.
+- Claude: `--no-chrome`. Claude Code's computer use is a macOS preview that isn't available with `-p`, so there is nothing else to turn off.
 
 **Extra read folders** (`[project] extra_read_dirs`, for example a slides folder the requirements refer to) are given to both agents. Claude gets `--add-dir=<folder>` for each. Codex's `--add-dir` makes a folder *writable*, so twokey doesn't use it for these; Codex's sandbox can normally read outside its workspace. The prompt lists the folders as read-only. `doctor --smoke` checks that each agent can read a file in each folder (D11).
 
@@ -250,11 +253,12 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - twokey passes `-c notify=[]`, so the owner's Codex `notify` program doesn't run after every turn of an unattended step (D9).
 - Resume: `codex exec resume <SESSION_ID> -`. The prompt is read from stdin only with the explicit `-` (D6). `resume` has no `--sandbox`, `-C` or `--add-dir`: twokey passes the sandbox as `-c sandbox_mode="<mode>"`, the writable folders as `-c sandbox_workspace_write.writable_roots=[...]`, and starts the process in the repo folder (D5). `doctor --smoke` checks that a resumed session keeps its sandbox.
 - twokey never passes `--worktree`, `--ephemeral` (sessions must be resumable) or `--dangerously-bypass-approvals-and-sandbox`, and the config refuses them in `extra_args` (D7).
-- Exit codes aren't documented. Treat a step as successful only if there was no `turn.failed`/`error` event **and** the `-o` file holds JSON that passes validation.
+- Exit codes aren't documented. Treat a step as successful only if there was no `turn.failed`/`error` event **and** the `-o` file holds JSON that passes validation. (The source at tag `rust-v0.165.0` exits with 1 after a failed turn, and writes the `-o` file only after a completed one. `error` events also report retries, so they alone don't fail a step.)
+- From the events twokey also reads the thread ID (`thread.started`), token usage (`turn.completed`), commands the sandbox refused (`command_execution` items with status `declined`, for the report), and a model reroute.
 - Shape: `codex exec --json --output-schema <schema> -o <staging>/<step>.json --sandbox <mode> --add-dir <scratch> -c notify=[] [-c ...] [-m <model>] -C <repo> -`
 
 **Claude Code (`claude -p`)**, from the docs on 12 Nov 2026, checked against the installed Claude Code 2.1.311 (D3, D8):
-- `--output-format json` returns one JSON object with `result`, `session_id`, `total_cost_usd` (an estimate) and, with `--json-schema '<schema>'`, a `structured_output` field. **Check that `structured_output` exists before using it.** It's missing if the run ended without valid output.
+- `--output-format json` returns one JSON object with `subtype`, `is_error`, `result`, `session_id`, `total_cost_usd` (an estimate), `usage`, `modelUsage` (per model), `permission_denials` and, with `--json-schema '<schema>'`, a `structured_output` field. **Check that `structured_output` exists before using it.** It's missing if the run ended without valid output (`subtype` `error_max_structured_output_retries`), and twokey also treats `is_error: true` as no answer. A resumed session reports the whole session's totals, so twokey replaces that session's earlier numbers instead of adding to them.
 - Exit code 0 means success. A failure inside the run is printed as the result on stdout.
 - **Don't use `--bare`.** It's recommended for scripts, but it never reads the subscription login. Without it, `-p` loads the project's `.claude/settings*.json` permission rules, hooks and `CLAUDE.md`, which is what the owner wants.
 - Permissions: since v2.1.302, a `-p` run starts in Manual mode, so anything needing approval is denied. Pass the configured `--permission-mode` (default `auto`), plus `--permission-prompts none` (v2.1.259+), which tells Claude nobody can approve and removes `AskUserQuestion`. Denials are listed in `permission_denials`. Copy them into the report, so the owner can add allow rules.
@@ -311,20 +315,22 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - Send on every pause, on a finish (converged or max rounds), on a crash, and when twokey starts waiting for a usage limit.
 
 **Usage and rate limits:**
-- Detect them from Claude's result (`is_error` with a limit message) and from Codex's `turn.failed`/`error` events. The text patterns are a configurable list, because the wording changes.
-- If a reset time can be read and the wait is ≤ `limits.max_wait_hours` (default 5), notify "waiting until HH:MM", sleep, then retry.
+- Detect them from Claude's result (`is_error` with a limit message) and from Codex's `turn.failed`/`error` events, only when the step failed. The text patterns are a configurable list, because the wording changes; the default adds `hit your` for both CLIs' current wording (D46).
+- Reset times twokey reads (local clock times): Codex's "Try again at 3:45 PM." or "Try again at Nov 14th, 2026 3:45 PM."; Claude's "resets 3:45pm", "resets 3pm" and "resets Mon 12:00am"; a gateway's "resets Dec 1" (00:00 UTC); and a Unix time after `|`.
+- If a reset time can be read and the wait is ≤ `limits.max_wait_hours` (default 5), notify "waiting until HH:MM", sleep (Ctrl+C stops it), then retry. At most 3 waits per step.
 - An audit, convergence or dispute step reruns from scratch.
 - A fix step reruns only if the tree is clean and no new commit was made; otherwise `PAUSE_USAGE_LIMIT`.
+- Otherwise `PAUSE_USAGE_LIMIT`, with the reset time if known. `resume` runs the step again.
 
 **Timeouts** (config, in minutes; defaults: audit 90, convergence 75, dispute 30, fix 120, verify 20): kill the process tree (close the job object) and remove the step's Docker resources.
-- An audit, convergence or dispute step gets one retry.
-- A fix step gets `PAUSE_TIMEOUT`, because it may have left the tree dirty.
+- An audit, convergence or dispute step gets one fresh retry. A second timeout means `PAUSE_TIMEOUT`, and `resume` runs the step again.
+- A fix step gets `PAUSE_TIMEOUT` at once, because it may have left the tree dirty. The pause shows `git status`, and the check after the step doesn't count the uncommitted changes as a violation; everything else is still checked (D47).
 
 **Resume:** `state.json` records every step with its status, attempt count, session or thread ID, paths and timestamps. Write it atomically after every change.
 - `twokey resume` picks up from the last finished step.
 - A step left `running` (because of a crash or Ctrl+C) first gets its Docker cleanup. Then it reruns if it's an audit, convergence or dispute step.
 - A `fix` left `running` pauses with the current `git status`; twokey never discards the owner's tree. If the tree is clean and HEAD is still the round's commit, the fix simply runs again.
-- After a pause, resume first resolves its reason (D32): a failed agent step runs again; a failed check runs the checks again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues only once the remote branch is part of local history (the owner merged or rebased by hand); `PAUSE_INVARIANT` continues once the tree is clean (the owner looked and undid what was wrong); `PAUSE_DIVERGED` runs the sync step again; `PAUSE_PROTECTED_MOVED`, and a `PAUSE_INVARIANT` that includes a protected branch, first ask the owner to confirm the change (D40).
+- After a pause, resume first resolves its reason (D32): a failed agent step runs again (also after `PAUSE_USAGE_LIMIT` and `PAUSE_TIMEOUT`); a failed check runs the checks again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues only once the remote branch is part of local history (the owner merged or rebased by hand); `PAUSE_INVARIANT` continues once the tree is clean (the owner looked and undid what was wrong); `PAUSE_DIVERGED` runs the sync step again; `PAUSE_PROTECTED_MOVED`, and a `PAUSE_INVARIANT` that includes a protected branch, first ask the owner to confirm the change (D40).
 - A step that answered and then paused at its checks isn't run again: resume publishes and logs its answer and goes on (D41).
 
 ---
@@ -397,7 +403,7 @@ verify = 20
 
 [limits]
 max_wait_hours = 5
-usage_limit_patterns = ["usage limit", "rate limit", "try again"]
+usage_limit_patterns = ["hit your", "usage limit", "rate limit", "try again"]
 
 [notify]
 toast = true
@@ -421,10 +427,10 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 | Command | What it does |
 |---|---|
 | `twokey init` | Creates the config template and checks `.gitignore`. |
-| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`, and how the branch stands to `upstream`: diverged is a `[WARN]`), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one tiny schema-constrained call to each agent; it tests Codex's configured sandbox (scratch write plus one network request), a resume of each session, that each agent can read a file in each extra read folder, and the arguments that turn off screen and browser control. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
-| `twokey run [--autopilot] [--max-rounds N]` | Starts a run. Refuses if preflight fails. `--fake-agents <folder>` plays scripted answers instead of calling the CLIs (tests; until M2 it is required). |
+| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`, and how the branch stands to `upstream`: diverged is a `[WARN]`), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one small schema-constrained call to each agent and resumes it once (D48): it tests the schema options, Codex's configured sandbox (a scratch write plus one network request), that a resumed session keeps its sandbox (a second write), that each agent can read the first bytes of a file in each extra read folder, the arguments that turn off screen and browser control, and that the repository is unchanged afterwards. twokey checks the files and bytes itself instead of trusting the answers, and shows the model each CLI reports and Claude's cost estimate. It needs the config and both CLIs; other `[FAIL]` lines don't block it. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
+| `twokey run [--autopilot] [--max-rounds N]` | Starts a run. Refuses if preflight fails. `--fake-agents <folder>` plays scripted answers instead of calling the CLIs (tests and demos). |
 | `twokey resume [--run ID] [--more-rounds N]` | Continues the latest (or given) run. Takes `--autopilot` and `--fake-agents` like `run`. |
-| `twokey status` | One screen: run, round, step, elapsed time, last gate result. |
+| `twokey status [--run ID]` | One screen: run, status (running with its process, paused with the reason), round, each step's status, time and tries, the last gate result, and what to do next. |
 | `twokey render <step> [--round N]` | Renders a prompt without running it, for tuning templates. |
 | `twokey report [--run ID]` | Rebuilds `report.md`. |
 | `twokey unlock` | Removes a stale lock after confirming that the PID inside it isn't running. |
@@ -469,8 +475,11 @@ Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
 7. Disputes and how they ended.
 8. Permission denials (Claude) and sandbox refusals (Codex), with the rule the owner could add.
 9. Time per step; Claude's estimated cost and Codex's token usage.
-10. Last, after a converged run with `upstream` set, if the branch has commits the upstream lacks: "**Next:** merge `<branch>` into `<upstream>` (merge commit, not squash). The next run fast-forwards." The terminal shows it too (D42).
-10. Which log entries to read for detail (by heading).
+10. Notes: gate notes, fast-forwards, protected-branch changes, model reroutes, and log headings that differ from the configured label (D44).
+11. Which log entries to read for detail (by heading).
+12. Last, after a converged run with `upstream` set, if the branch has commits the upstream lacks: "**Next:** merge `<branch>` into `<upstream>` (merge commit, not squash). The next run fast-forwards." The terminal shows it too (D42).
+
+`twokey report` rebuilds `report.md` from `state.json` without adding a log entry.
 
 ---
 
@@ -618,7 +627,8 @@ ${p3_rule}
   - the log heading label: reported model with and without a `[model_names]` entry, no reported model, and the mismatch flag;
   - Docker cleanup with a fake `docker`: only names with the step's prefix are removed, also when another name merely contains the prefix.
 - Tests never read or write the developer's real home, git config or projects: they use `t.TempDir()` and `t.Setenv` (including `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`).
-- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. The scenario format is described in `internal/runner/fake.go`: per round, `<step>.json` answers (with `${commit}` and `${new_commits}`), `<step>.<attempt>.json` for a resumed retry, and `<step>.actions.json` for what the fake agent does first: write files, commit, append to a file, push, or let a teammate push to the branch or, with `teammate_branch`, to another one (D37, D40). End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent pushing by itself (expect `PAUSE_INVARIANT`); resume after a pause at a step's checks (D41). With `upstream` set (D39): behind (fast-forward and push), ahead, equal, diverged (`PAUSE_DIVERGED`, then resume after a merge-commit merge), the owner fast-forwarding by hand while paused, and the upstream moving during a round. Protected branches (D40): one moved by someone else during a step (`PAUSE_PROTECTED_MOVED`; only `y` confirms), and one moved together with an agent's push (`PAUSE_INVARIANT`).
+- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. The scenario format is described in `internal/runner/fake.go`: per round, `<step>.json` answers (with `${commit}` and `${new_commits}`), `<step>.<attempt>.json` for a resumed retry, and `<step>.actions.json` for what the fake agent does first: write files, commit, append to a file, push, or let a teammate push to the branch or, with `teammate_branch`, to another one (D37, D40). End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent pushing by itself (expect `PAUSE_INVARIANT`); resume after a pause at a step's checks (D41). With `upstream` set (D39): behind (fast-forward and push), ahead, equal, diverged (`PAUSE_DIVERGED`, then resume after a merge-commit merge), the owner fast-forwarding by hand while paused, and the upstream moving during a round. Protected branches (D40): one moved by someone else during a step (`PAUSE_PROTECTED_MOVED`; only `y` confirms), and one moved together with an agent's push (`PAUSE_INVARIANT`). Running agents (M2): an audit's timeout gets one fresh try, two mean `PAUSE_TIMEOUT`; a fix's timeout pauses at once; a usage limit with a near reset time is waited out, one without pauses (`PAUSE_USAGE_LIMIT`), and a fix that committed before its limit pauses; Docker cleanup after every step; Claude session IDs chosen up front; usage of a resumed Claude session not counted twice; raw output published; the heartbeat; `status` and `report`.
+- **Real CLIs without calling them:** the command lines are built by pure functions with table tests, and the output parsers and runs are tested with output in the documented formats, written by a fake launcher. The process tree launcher is tested with the test binary as child and grandchild. `doctor --smoke` is tested with fake agents that do what the prompt asks.
 - **CI:** GitHub Actions on `windows-latest` and `ubuntu-latest`, running `go vet` and `go test` (plus `go test -race` on Linux), `golangci-lint`, `govulncheck` and a `go mod tidy` check. Actions are pinned to full commit SHAs and tool versions are pinned; new versions must be at least 7 days old (D2). No real agent calls in CI, ever.
 - **Smoke test on the owner's machine:** `twokey doctor --smoke`, with their OK.
 

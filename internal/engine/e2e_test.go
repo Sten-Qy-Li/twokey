@@ -492,8 +492,9 @@ func TestAgentFailsTwiceThenResume(t *testing.T) {
 	if st.Pause.Reason != "PAUSE_AGENT_FAILED" || st.Rounds[0].Step(state.ClaudeAudit).Status != state.Done {
 		t.Fatalf("pause %+v", st.Pause)
 	}
-	// The other audit's result stays in staging; resume reruns only Codex.
-	w.json(1, "codex-audit.json", audit())
+	// The other audit's result stays in staging; resume reruns only Codex,
+	// as its third try.
+	w.json(1, "codex-audit.3.json", audit())
 	w.expect(w.resume("", 0), engine.ExitDone)
 	if a := w.state().Rounds[0].Step(state.ClaudeAudit).Attempts; a != 1 {
 		t.Errorf("Claude's audit ran again (%d attempts)", a)

@@ -11,6 +11,7 @@ import (
 	"runtime"
 
 	"github.com/Sten-Qy-Li/twokey/internal/config"
+	"github.com/Sten-Qy-Li/twokey/internal/docker"
 	"github.com/Sten-Qy-Li/twokey/internal/engine"
 	"github.com/Sten-Qy-Li/twokey/internal/gitx"
 	"github.com/Sten-Qy-Li/twokey/internal/initcmd"
@@ -60,17 +61,22 @@ func engineOptions(env Env, root string, cfg *config.Config, fake string, autopi
 	if scratch == "" {
 		scratch = paths.ScratchRoot()
 	}
-	fakeDir := fake
-	if fakeDir != "" && !filepath.IsAbs(fakeDir) {
-		fakeDir = filepath.Join(env.Dir, fakeDir)
-	}
-	return engine.Options{
+	o := engine.Options{
 		Root: root, Cfg: cfg, Proc: env.Runner, Out: env.Out,
-		Runner:      runner.Fake{Dir: fakeDir, Git: env.Runner},
+		Runner:      runner.NewReal(cfg, env.Runner),
+		Docker:      docker.Cleaner{R: env.Runner},
 		UI:          engine.NewTextUI(env.In, env.Out, autopilot),
 		StagingRoot: staging, ScratchRoot: scratch,
-		FakeAgents: true, MaxRounds: maxRounds, Autopilot: autopilot, Editor: editor(),
-	}, nil
+		MaxRounds: maxRounds, Autopilot: autopilot, Editor: editor(),
+	}
+	if fake != "" {
+		if !filepath.IsAbs(fake) {
+			fake = filepath.Join(env.Dir, fake)
+		}
+		// Fake agents start no containers, and tests never call Docker.
+		o.Runner, o.Docker, o.FakeAgents = runner.Fake{Dir: fake, Git: env.Runner}, nil, true
+	}
+	return o, nil
 }
 
 // editor opens prompts in stepper mode: $EDITOR, else notepad or vi.
@@ -84,8 +90,6 @@ func editor() string {
 	return "vi"
 }
 
-const noRealAgents = "Real agent runs arrive in the next milestone (M2). For now, run with --fake-agents <scenario folder>."
-
 func runRun(ctx context.Context, args []string, env Env) int {
 	fs := newFlags("run", "Starts a run: blind audits, convergence, fixes and pushes, until both agents clear the same commit.", env)
 	configPath := fs.String("config", "", "read the config from this file instead of local-only_twokey.toml")
@@ -94,10 +98,6 @@ func runRun(ctx context.Context, args []string, env Env) int {
 	fake := fs.String("fake-agents", "", "play scripted answers from this scenario folder (for tests)")
 	if code := parse(fs, args); code >= 0 {
 		return code
-	}
-	if *fake == "" {
-		fmt.Fprintln(env.Err, noRealAgents)
-		return 2
 	}
 	root, cfg, ok := project(ctx, env, *configPath)
 	if !ok {
@@ -120,10 +120,6 @@ func runResume(ctx context.Context, args []string, env Env) int {
 	fake := fs.String("fake-agents", "", "play scripted answers from this scenario folder (for tests)")
 	if code := parse(fs, args); code >= 0 {
 		return code
-	}
-	if *fake == "" {
-		fmt.Fprintln(env.Err, noRealAgents)
-		return 2
 	}
 	root, cfg, ok := project(ctx, env, *configPath)
 	if !ok {
@@ -217,4 +213,50 @@ func copyTemplates(ctx context.Context, env Env, configFlag string) int {
 	}
 	ui.Detail(env.Out, "Edit them there. twokey uses a file in that folder instead of its default.")
 	return 0
+}
+
+func runStatus(ctx context.Context, args []string, env Env) int {
+	flags := newFlags("status", "Shows a run on one screen: round, steps, time and the last gate result.", env)
+	configPath := flags.String("config", "", "read the config from this file instead of local-only_twokey.toml")
+	runID := flags.String("run", "", "the run to show (default: the latest)")
+	if code := parse(flags, args); code >= 0 {
+		return code
+	}
+	root, cfg, ok := project(ctx, env, *configPath)
+	if !ok {
+		return 1
+	}
+	o, err := engineOptions(env, root, cfg, "", false, 0)
+	if err == nil {
+		var out string
+		if out, err = engine.Status(o, *runID); err == nil {
+			fmt.Fprint(env.Out, out)
+			return 0
+		}
+	}
+	ui.Line(env.Out, ui.Fail, err.Error())
+	return 1
+}
+
+func runReport(ctx context.Context, args []string, env Env) int {
+	flags := newFlags("report", "Rebuilds a run's report.md from its state.", env)
+	configPath := flags.String("config", "", "read the config from this file instead of local-only_twokey.toml")
+	runID := flags.String("run", "", "the run to report on (default: the latest)")
+	if code := parse(flags, args); code >= 0 {
+		return code
+	}
+	root, cfg, ok := project(ctx, env, *configPath)
+	if !ok {
+		return 1
+	}
+	o, err := engineOptions(env, root, cfg, "", false, 0)
+	if err == nil {
+		var path string
+		if path, err = engine.Report(ctx, o, *runID); err == nil {
+			ui.Line(env.Out, ui.OK, "Wrote "+path)
+			return 0
+		}
+	}
+	ui.Line(env.Out, ui.Fail, err.Error())
+	return 1
 }

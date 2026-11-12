@@ -15,7 +15,6 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/invariant"
 	"github.com/Sten-Qy-Li/twokey/internal/logfile"
 	"github.com/Sten-Qy-Li/twokey/internal/proc"
-	"github.com/Sten-Qy-Li/twokey/internal/runner"
 	"github.com/Sten-Qy-Li/twokey/internal/schema"
 	"github.com/Sten-Qy-Li/twokey/internal/state"
 	"github.com/Sten-Qy-Li/twokey/internal/ui"
@@ -167,70 +166,6 @@ func (e *engine) openEditor(path string) {
 	}
 }
 
-// runAgent runs one agent step. An invalid answer gets one retry in the
-// same session (SPEC section 9). It returns the answer, or why there is
-// none.
-func (e *engine) runAgent(ctx context.Context, r *state.Round, s *state.Step, step, prompt, resume string, check func([]byte) []string) ([]byte, string) {
-	scratch := filepath.Join(e.o.ScratchRoot, e.st.RunID, fmt.Sprintf("r%d", r.N), s.Name)
-	if err := os.MkdirAll(scratch, 0o755); err != nil {
-		return nil, "can't create the scratch folder: " + err.Error()
-	}
-	req := runner.Request{Agent: s.Agent, Name: s.Name, Step: step, Round: r.N, Prompt: prompt,
-		RepoDir: e.o.Root, ScratchDir: scratch, Commit: r.Commit, Resume: resume}
-
-	var probs, all []string
-	for try := 1; try <= 2; try++ {
-		e.update(func() {
-			s.Status, s.Error = state.Active, ""
-			s.Attempts++
-			if s.Started.IsZero() {
-				s.Started = e.o.Now().UTC()
-			}
-		})
-		req.Attempt = s.Attempts
-		res := e.o.Runner.Run(ctx, req)
-		if ctx.Err() != nil {
-			return nil, "stopped"
-		}
-		e.update(func() {
-			if res.SessionID != "" {
-				s.SessionID = res.SessionID
-			}
-			if res.Model != "" {
-				s.Model = res.Model
-			}
-		})
-		switch {
-		case res.Problem != "":
-			probs = []string{"the agent gave no answer: " + res.Problem}
-		case len(res.Answer) == 0:
-			probs = []string{"the agent gave no answer"}
-		default:
-			probs = check(res.Answer)
-		}
-		if len(probs) == 0 {
-			e.update(func() { s.Status, s.Finished = state.Done, e.o.Now().UTC() })
-			if err := os.MkdirAll(e.staging, 0o755); err == nil {
-				err = os.WriteFile(e.stagingPath(r, s), res.Answer, 0o644)
-				if err != nil {
-					return nil, "can't save the answer: " + err.Error()
-				}
-			}
-			return res.Answer, ""
-		}
-		for _, p := range probs {
-			all = append(all, fmt.Sprintf("attempt %d: %s", req.Attempt, p))
-		}
-		if s.SessionID == "" {
-			break // nothing to resume
-		}
-		req.Resume = s.SessionID
-		req.Prompt = retryPrompt(probs)
-	}
-	e.update(func() { s.Status, s.Error = state.Failed, strings.Join(all, "; ") })
-	return nil, strings.Join(all, "\n")
-}
-
 func retryPrompt(probs []string) string {
 	return "twokey can't use your answer, for these reasons:\n- " + strings.Join(probs, "\n- ") +
 		"\n\nFix these problems and answer again with only the JSON object that the schema asks for. The rules from the start of this session still apply.\n"
@@ -242,7 +177,9 @@ func (e *engine) stagingPath(r *state.Round, s *state.Step) string {
 	return filepath.Join(e.staging, fmt.Sprintf("r%d-%s.json", r.N, s.Name))
 }
 
-// publish copies an answer from staging into the run folder.
+// publish copies an answer from staging into the run folder, with the
+// CLI's raw output of every try: r1-codex-audit.2.events.jsonl in staging
+// becomes r1/codex-audit.2.events.jsonl.
 func (e *engine) publish(r *state.Round, s *state.Step) error {
 	data, err := os.ReadFile(e.stagingPath(r, s))
 	if err != nil {
@@ -250,6 +187,17 @@ func (e *engine) publish(r *state.Round, s *state.Step) error {
 	}
 	if err := os.MkdirAll(e.roundDir(r), 0o755); err != nil {
 		return err
+	}
+	stem := fmt.Sprintf("r%d-%s.", r.N, s.Name)
+	raw, _ := filepath.Glob(filepath.Join(e.staging, stem+"*.*"))
+	for _, src := range raw {
+		b, err := os.ReadFile(src)
+		if err == nil {
+			err = os.WriteFile(filepath.Join(e.roundDir(r), s.Name+"."+strings.TrimPrefix(filepath.Base(src), stem)), b, 0o600)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	path := filepath.Join(e.roundDir(r), s.Name+".json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
@@ -298,10 +246,14 @@ func (e *engine) maskTeammatePush(ctx context.Context, before invariant.Snapshot
 
 // checkStep compares the snapshots around an agent step (SPEC section 8),
 // plus state.json against what twokey last wrote. It pauses and returns
-// false if the step changed what it must not change.
-func (e *engine) checkStep(ctx context.Context, what string, before, after invariant.Snapshot, fix bool) bool {
+// false if the step changed what it must not change. dirtyOK accepts
+// uncommitted changes, for a fix that was cut short.
+func (e *engine) checkStep(ctx context.Context, what string, before, after invariant.Snapshot, fix, dirtyOK bool) bool {
 	e.maskTeammatePush(ctx, before, &after)
 	moved := e.movedProtected(before, &after)
+	if dirtyOK {
+		after.Status = ""
+	}
 	var v []string
 	if fix {
 		v = invariant.AfterFix(before, after, e.st.Branch, nil)
@@ -370,7 +322,7 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 		if !ok {
 			return false
 		}
-		problems := make([]string, len(todo))
+		results := make([]outcome, len(todo))
 		var wg sync.WaitGroup
 		for i, s := range todo {
 			wg.Add(1)
@@ -380,7 +332,7 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 				if s.Agent == "claude" {
 					prefix = schema.IDPrefix(r.N, schema.ClaudeID)
 				}
-				_, problems[i] = e.runAgent(ctx, r, s, schema.Audit, prompts[s.Name], "", func(b []byte) []string {
+				results[i] = e.runAgent(ctx, r, s, schema.Audit, prompts[s.Name], "", func(b []byte) []string {
 					var a schema.AuditResult
 					if p := schema.Decode(schema.Audit, b, &a); p != nil {
 						return p
@@ -395,13 +347,12 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 			return false
 		}
 		after, ok := e.snapshot(ctx)
-		if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's blind audits", r.N), before, after, false) {
+		if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's blind audits", r.N), before, after, false, false) {
 			return false
 		}
 		for i, s := range todo {
-			if problems[i] != "" {
-				return e.pause(PauseAgentFailed, fmt.Sprintf("%s gave no usable answer, even after one retry:\n%s", s.Name, problems[i]),
-					"Look at the step's files in the run folder, then run twokey resume to try again.", s.Name, nil)
+			if results[i].problem != "" {
+				return e.agentFailed(ctx, s, schema.Audit, results[i])
 			}
 		}
 	}
@@ -474,18 +425,17 @@ func (e *engine) readOnlyStep(ctx context.Context, r *state.Round, s *state.Step
 	if !ok {
 		return false
 	}
-	_, problem := e.runAgent(ctx, r, s, step, prompt, "", check)
+	o := e.runAgent(ctx, r, s, step, prompt, "", check)
 	if ctx.Err() != nil {
 		e.stop("Stopped (Ctrl+C).")
 		return false
 	}
 	after, ok := e.snapshot(ctx)
-	if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's %s step", r.N, s.Name), before, after, false) {
+	if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's %s step", r.N, s.Name), before, after, false, false) {
 		return false
 	}
-	if problem != "" {
-		return e.pause(PauseAgentFailed, fmt.Sprintf("%s gave no usable answer, even after one retry:\n%s", s.Name, problem),
-			"Look at the step's files in the run folder, then run twokey resume to try again.", s.Name, nil)
+	if o.problem != "" {
+		return e.agentFailed(ctx, s, step, o)
 	}
 	return true
 }
@@ -626,7 +576,7 @@ func (e *engine) runFix(ctx context.Context, r *state.Round, s *state.Step, ids 
 	if !ok {
 		return false
 	}
-	answer, problem := e.runAgent(ctx, r, s, schema.Fix, prompt, resume, func(b []byte) []string {
+	o := e.runAgent(ctx, r, s, schema.Fix, prompt, resume, func(b []byte) []string {
 		var f schema.FixResult
 		if p := schema.Decode(schema.Fix, b, &f); p != nil {
 			return p
@@ -640,16 +590,17 @@ func (e *engine) runFix(ctx context.Context, r *state.Round, s *state.Step, ids 
 		e.stop("Stopped (Ctrl+C). The fix step may have left changes; resume checks them.")
 		return false
 	}
+	// A fix that was cut short may leave changes; its own pause says so.
+	cut := o.reason == PauseTimeout || o.reason == PauseUsageLimit
 	after, ok := e.snapshot(ctx)
-	if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's fix step", r.N), before, after, true) {
+	if !ok || !e.checkStep(ctx, fmt.Sprintf("Round %d's fix step", r.N), before, after, true, cut) {
 		return false
 	}
-	if problem != "" {
-		return e.pause(PauseAgentFailed, fmt.Sprintf("The fix step gave no usable answer, even after one retry:\n%s", problem),
-			"Look at the step's files and the repository. Undo any commits you don't want, then run twokey resume.", s.Name, nil)
+	if o.problem != "" {
+		return e.agentFailed(ctx, s, schema.Fix, o)
 	}
 	var f schema.FixResult
-	_ = json.Unmarshal(answer, &f)
+	_ = json.Unmarshal(o.answer, &f)
 	if len(f.Commits) == 0 {
 		return e.noProgress(s)
 	}

@@ -144,7 +144,7 @@ func Default() *Config {
 		Timeouts: Timeouts{Audit: 90, Convergence: 75, Dispute: 30, Fix: 120, Verify: 20},
 		Limits: Limits{
 			MaxWaitHours:       5,
-			UsageLimitPatterns: []string{"usage limit", "rate limit", "try again"},
+			UsageLimitPatterns: []string{"hit your", "usage limit", "rate limit", "try again"},
 		},
 		Notify: Notify{Toast: true},
 	}

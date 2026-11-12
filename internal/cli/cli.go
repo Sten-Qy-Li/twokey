@@ -24,12 +24,12 @@ Usage:
 Commands:
   init      Create the config file and check .gitignore
   doctor    Check that everything twokey needs is in place
-  run       Start a run (fake agents only for now)
+  run       Start a run
   resume    Continue a paused or stopped run
   render    Show a prompt without running it
   unlock    Remove a stale lock
-  status    Show the current run                 (not built yet)
-  report    Rebuild a run's report               (not built yet)
+  status    Show the current run
+  report    Rebuild a run's report
   version   Print the version
 
 Run "twokey <command> -h" to see a command's options.
@@ -84,9 +84,10 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runRender(ctx, rest, env)
 	case "unlock":
 		return runUnlock(ctx, rest, env)
-	case "status", "report":
-		fmt.Fprintf(env.Err, "twokey %s isn't built yet. This is an early version: see the README.\n", cmd)
-		return 2
+	case "status":
+		return runStatus(ctx, rest, env)
+	case "report":
+		return runReport(ctx, rest, env)
 	default:
 		fmt.Fprintf(env.Err, "twokey: unknown command %q. Run \"twokey help\" to see the commands.\n", cmd)
 		return 2
@@ -135,13 +136,10 @@ func runInit(ctx context.Context, args []string, env Env) int {
 func runDoctor(ctx context.Context, args []string, env Env) int {
 	fs := newFlags("doctor", "Checks git, both agent CLIs, the config, the repository and the notification setup.", env)
 	configPath := fs.String("config", "", "read the config from this file instead of local-only_twokey.toml")
-	smoke := fs.Bool("smoke", false, "also make one tiny real call to each agent (not built yet)")
+	smoke := fs.Bool("smoke", false, "also make small real calls to both agents (uses a little of your plan)")
 	if code := parse(fs, args); code >= 0 {
 		return code
 	}
-	if *smoke {
-		fmt.Fprintln(env.Err, "twokey doctor --smoke isn't built yet. Run twokey doctor without --smoke.")
-		return 2
-	}
-	return doctor.Run(ctx, doctor.Options{Dir: env.Dir, ConfigPath: *configPath, Runner: env.Runner, Out: env.Out})
+	return doctor.Run(ctx, doctor.Options{Dir: env.Dir, ConfigPath: *configPath, Runner: env.Runner, Out: env.Out,
+		StagingRoot: env.StagingRoot, ScratchRoot: env.ScratchRoot, Smoke: *smoke})
 }

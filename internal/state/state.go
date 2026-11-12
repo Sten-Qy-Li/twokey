@@ -57,6 +57,30 @@ type Step struct {
 	Started   time.Time `json:"started,omitzero"`
 	Finished  time.Time `json:"finished,omitzero"`
 	Error     string    `json:"error,omitempty"`
+	Usage     Usage     `json:"usage,omitzero"` // all tries together
+	// SessionUsage is what the CLI last reported for the current session.
+	// Claude reports a resumed session's whole total, so a resume replaces
+	// it instead of adding to it.
+	SessionUsage Usage    `json:"session_usage,omitzero"`
+	Denials      []string `json:"denials,omitempty"` // permission denials, refused commands
+	Notes        []string `json:"notes,omitempty"`
+}
+
+// Usage is tokens and the estimated cost of agent runs.
+type Usage struct {
+	InputTokens  int64   `json:"input_tokens,omitempty"`
+	OutputTokens int64   `json:"output_tokens,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+}
+
+// Plus adds two usages.
+func (u Usage) Plus(o Usage) Usage {
+	return Usage{u.InputTokens + o.InputTokens, u.OutputTokens + o.OutputTokens, u.CostUSD + o.CostUSD}
+}
+
+// Minus subtracts o from u.
+func (u Usage) Minus(o Usage) Usage {
+	return Usage{u.InputTokens - o.InputTokens, u.OutputTokens - o.OutputTokens, u.CostUSD - o.CostUSD}
 }
 
 // Gate is the last gate result of a round.

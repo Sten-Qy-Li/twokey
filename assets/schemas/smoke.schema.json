@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wrote", "http_status", "reads", "note"],
+  "properties": {
+    "wrote": { "type": "boolean" },
+    "http_status": { "type": "integer" },
+    "reads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "first_bytes_hex"],
+        "properties": {
+          "path": { "type": "string" },
+          "first_bytes_hex": { "type": "string" }
+        }
+      }
+    },
+    "note": { "type": "string" }
+  }
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Sten-Qy-Li/twokey/internal/gitx"
 	"github.com/Sten-Qy-Li/twokey/internal/proc"
@@ -44,6 +45,12 @@ type Actions struct {
 	// branch): someone else pushed.
 	TeammatePush   string `json:"teammate_push"`
 	TeammateBranch string `json:"teammate_branch"`
+	// Timeout ends the step as if it ran out of time.
+	Timeout bool `json:"timeout"`
+	// Limit ends the step with a usage limit and this message.
+	// LimitResetIn (a Go duration such as "30m") says when it resets.
+	Limit        string `json:"limit"`
+	LimitResetIn string `json:"limit_reset_in"`
 }
 
 // Run plays one step.
@@ -69,8 +76,19 @@ func (f Fake) Run(ctx context.Context, req Request) Result {
 		res.Problem = "the fake agent's actions failed: " + err.Error()
 		return res
 	}
-	if acts.NoAnswer != "" {
+	switch {
+	case acts.NoAnswer != "":
 		res.Problem = acts.NoAnswer
+		return res
+	case acts.Timeout:
+		res.TimedOut, res.Problem = true, "the fake agent ran out of time"
+		return res
+	case acts.Limit != "":
+		res.Limit = &Limit{Message: acts.Limit}
+		if d, err := time.ParseDuration(acts.LimitResetIn); err == nil {
+			res.Limit.Reset = time.Now().Add(d)
+		}
+		res.Problem = "the fake agent hit a limit: " + acts.Limit
 		return res
 	}
 
