@@ -24,13 +24,15 @@ type SandboxResult struct {
 }
 
 // CodexSandboxArgs builds "codex sandbox" arguments that run one command
-// in the sandbox a Codex step gets, without a model call (D51).
-func CodexSandboxArgs(c config.Codex, repo string, cmd []string) []string {
+// in the sandbox a Codex step gets, without a model call (D51). The
+// command runs in the process's folder: codex sandbox accepts -C only
+// together with --permission-profile.
+func CodexSandboxArgs(c config.Codex, cmd []string) []string {
 	args := []string{"sandbox", "-c", "sandbox_mode=" + tomlString(c.Sandbox), "-c", "notify=[]"}
 	if c.Sandbox == "workspace-write" && c.Network {
 		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
 	}
-	args = append(args, "-C", repo, "--")
+	args = append(args, "--")
 	return append(args, cmd...)
 }
 
@@ -39,9 +41,10 @@ var sandboxEnv = []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"}
 
 // ProbeCodexSandbox tries the commands that Codex audits use and that may
 // fail under the sandbox's restricted token: git ls-remote against the
-// project's remote, and docker version. Each runs outside the sandbox
-// first, so a failure is blamed on the sandbox only if it works outside.
-// It returns nil when there is no sandbox to test (danger-full-access).
+// project's remote, and docker version. Each runs in the repository
+// folder, outside the sandbox first, so a failure is blamed on the sandbox
+// only if it works outside. It returns nil when there is no sandbox to
+// test (danger-full-access).
 func ProbeCodexSandbox(ctx context.Context, r proc.Runner, cfg *config.Config, repo string) []SandboxResult {
 	if cfg.Codex.Sandbox == "danger-full-access" {
 		return nil
@@ -78,12 +81,12 @@ func ProbeCodexSandbox(ctx context.Context, r proc.Runner, cfg *config.Config, r
 			return r.Run(cctx, proc.Cmd{Dir: repo, Name: name, Args: args, Env: sandboxEnv})
 		}
 		if o := run(c.exe, c.args); o.Err != nil {
-			res.Detail = "it doesn't work outside the sandbox either: " + firstNonEmpty(nil, o.Err, lastLine(o.Stderr))
+			res.Detail = "it doesn't work outside the sandbox either: " + firstNonEmpty(nil, o.Err, errorLine(o.Stderr+"\n"+o.Stdout))
 			out = append(out, res)
 			continue
 		}
-		if in := run(codex, CodexSandboxArgs(cfg.Codex, repo, append([]string{c.exe}, c.args...))); in.Err != nil {
-			res.Status, res.Detail = SandboxLimited, firstNonEmpty(nil, in.Err, lastLine(in.Stderr+"\n"+in.Stdout))
+		if in := run(codex, CodexSandboxArgs(cfg.Codex, append([]string{c.exe}, c.args...))); in.Err != nil {
+			res.Status, res.Detail = SandboxLimited, firstNonEmpty(nil, in.Err, errorLine(in.Stderr+"\n"+in.Stdout))
 		} else {
 			res.Status = SandboxOK
 		}
@@ -103,7 +106,23 @@ func Limited(results []SandboxResult) []SandboxResult {
 	return out
 }
 
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
+// errorLine picks the line of an error output that says what went wrong:
+// git's "fatal:" line, else an "error:" line, else the first line.
+func errorLine(s string) string {
+	var first string
+	for _, prefix := range []string{"fatal:", "error:"} {
+		for _, line := range strings.Split(s, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if first == "" {
+				first = line
+			}
+			if strings.HasPrefix(strings.ToLower(line), prefix) {
+				return line
+			}
+		}
+	}
+	return first
 }

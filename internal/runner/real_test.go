@@ -250,9 +250,9 @@ func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) 
 
 func TestCodexSandboxArgs(t *testing.T) {
 	c := config.Default().Codex
-	got := CodexSandboxArgs(c, `C:\repo`, []string{`C:\git.exe`, "ls-remote"})
+	got := CodexSandboxArgs(c, []string{`C:\git.exe`, "ls-remote"})
 	want := []string{"sandbox", "-c", "sandbox_mode='workspace-write'", "-c", "notify=[]",
-		"-c", "sandbox_workspace_write.network_access=true", "-C", `C:\repo`, "--", `C:\git.exe`, "ls-remote"}
+		"-c", "sandbox_workspace_write.network_access=true", "--", `C:\git.exe`, "ls-remote"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
@@ -272,7 +272,7 @@ func (p *probeProc) Run(_ context.Context, c proc.Cmd) proc.Result {
 	}
 	p.ran = append(p.ran, where+" "+what)
 	if p.fail[where+" "+what] {
-		return proc.Result{ExitCode: 1, Stderr: "boom\nAccess is denied.", Err: errors.New("exit 1")}
+		return proc.Result{ExitCode: 1, Stderr: "0 [main] ssh: *** fatal error - Win32 error 5\nfatal: Access is denied.\n\nPlease make sure", Err: errors.New("exit 1")}
 	}
 	return proc.Result{Stdout: "ok"}
 }
@@ -291,8 +291,8 @@ func TestProbeCodexSandbox(t *testing.T) {
 	p := &probeProc{fail: map[string]bool{"inside git": true, "outside docker": true}}
 	got := ProbeCodexSandbox(t.Context(), p, cfg, `C:\repo`)
 	want := []SandboxResult{
-		{Name: "git ls-remote", Status: SandboxLimited, Detail: "Access is denied."},
-		{Name: "docker", Status: SandboxUntested, Detail: "it doesn't work outside the sandbox either: Access is denied."},
+		{Name: "git ls-remote", Status: SandboxLimited, Detail: "fatal: Access is denied."},
+		{Name: "docker", Status: SandboxUntested, Detail: "it doesn't work outside the sandbox either: fatal: Access is denied."},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %+v\nwant %+v", got, want)
@@ -314,5 +314,17 @@ func TestCodexArgsWebSearch(t *testing.T) {
 	c.WebSearch = "live"
 	if args := strings.Join(CodexArgs(c, CodexParams{Resume: "t"}), " "); !strings.Contains(args, "-c web_search='live'") {
 		t.Errorf("args %s", args)
+	}
+}
+
+func TestErrorLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"error: the following required arguments were not provided:\n  --permission-profile <NAME>\n\nFor more information, try '--help'.": "error: the following required arguments were not provided:",
+		"warning: x\nfatal: Could not read from remote repository.":                                                                        "fatal: Could not read from remote repository.",
+		"\n  just one line  \n": "just one line",
+	} {
+		if got := errorLine(in); got != want {
+			t.Errorf("errorLine(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
