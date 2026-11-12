@@ -5,6 +5,8 @@ Two blind audits of commit ${commit} are finished:
 - ${claude_audit_path}
 One of them is your own earlier audit. Treat it with the same scepticism as the other.
 
+Upstream branch: ${upstream_status}
+
 1. Independently verify every finding that only one audit raised, P1 and P2 first. Reproduce where you can.
 2. Merge findings that both audits raised.
 3. Use what you learned to look for related problems neither audit found. Add them with source "convergence".

@@ -469,6 +469,7 @@ Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
 7. Disputes and how they ended.
 8. Permission denials (Claude) and sandbox refusals (Codex), with the rule the owner could add.
 9. Time per step; Claude's estimated cost and Codex's token usage.
+10. Last, after a converged run with `upstream` set, if the branch has commits the upstream lacks: "**Next:** merge `<branch>` into `<upstream>` (merge commit, not squash). The next run fast-forwards." The terminal shows it too (D42).
 10. Which log entries to read for detail (by heading).
 
 ---
@@ -484,7 +485,7 @@ These are starting points. The owner will tune them, so keep them as plain files
 - `${step_write_rule}` contains `${branch}`, so it is rendered first.
 
 Placeholders:
-- **Every step:** `${run_id}`, `${round}`, `${max_rounds}`, `${agent_name}`, `${other_agent}`, `${repo_path}`, `${branch}`, `${protected_branches}`, `${checkpoint_label}`, `${requirements_path}`, `${extra_read_dirs}`, `${log_file}`, `${commit}`, `${scratch_dir}`, `${container_prefix}`, `${port_range}`, `${step_write_rule}`, `${history}`, `${decisions}`, `${id_prefix}`
+- **Every step:** `${run_id}`, `${round}`, `${max_rounds}`, `${agent_name}`, `${other_agent}`, `${repo_path}`, `${branch}`, `${protected_branches}`, `${checkpoint_label}`, `${requirements_path}`, `${extra_read_dirs}`, `${log_file}`, `${commit}`, `${upstream_status}` (how the commit stood to `<remote>/<upstream>` when the round started, the same text for both blind audits; D42), `${scratch_dir}`, `${container_prefix}`, `${port_range}`, `${step_write_rule}`, `${history}`, `${decisions}`, `${id_prefix}`
 - **`convergence`, `fix` and `dispute`:** `${codex_audit_path}`, `${claude_audit_path}`, `${convergence_path}`, `${prior_merged_paths}`, `${fix_list}`, `${p3_rule}`, `${verify_commands}`, `${disputes}`
 
 ### preamble.md
@@ -538,6 +539,8 @@ Audit the repository at commit ${commit}. The question: is it ready for ${checkp
 
 This audit is blind. ${other_agent} is auditing the same commit right now; you won't see its work in this step, and it won't see yours.
 
+Upstream branch: ${upstream_status}
+
 1. Read the requirements and every source they list.
 2. Check code, tests, configuration and documentation against each requirement. Run what you need to run, in a copy under your scratch folder whenever it would write anything.
 3. If earlier rounds of this run fixed findings (see History), check that each fix works.
@@ -555,6 +558,8 @@ Two blind audits of commit ${commit} are finished:
 - ${codex_audit_path}
 - ${claude_audit_path}
 One of them is your own earlier audit. Treat it with the same scepticism as the other.
+
+Upstream branch: ${upstream_status}
 
 1. Independently verify every finding that only one audit raised, P1 and P2 first. Reproduce where you can.
 2. Merge findings that both audits raised.

@@ -74,25 +74,35 @@ func TestUpstreamBehindFastForwards(t *testing.T) {
 	}
 	w.outHas("Fast-forwarded feature to origin/main and pushed it")
 	w.outHas("(2 commits)")
-	prompt, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", "codex-audit.prompt.md"))
-	if !strings.Contains(string(prompt), tip) {
-		t.Error("the audit prompt must name the fast-forwarded commit")
+	for _, name := range []string{"codex-audit", "claude-audit", "convergence"} {
+		prompt, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", name+".prompt.md"))
+		want := fmt.Sprintf("Upstream branch: origin/main. When this round started, it was the same commit as the one you audit (%s).", tip[:12])
+		if !strings.Contains(string(prompt), want) {
+			t.Errorf("the %s prompt lacks %q", name, want)
+		}
 	}
-	if !strings.Contains(w.report(), "Round 1: fast-forwarded feature from ") {
-		t.Errorf("report:\n%s", w.report())
+	report := w.report()
+	if !strings.Contains(report, "Round 1: fast-forwarded feature from ") || strings.Contains(report, "**Next:**") {
+		t.Errorf("report:\n%s", report)
 	}
 }
 
+// Equal or ahead: nothing moves. The audits learn how the commit stands to
+// the upstream (D42), and an ahead branch gets the advice to merge it.
 func TestUpstreamNothingToDo(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		setup func(w *world)
-		want  string
+		name   string
+		setup  func(w *world)
+		want   string
+		prompt string
+		advice bool
 	}{
-		{"ahead", func(*world) {}, "origin/feature is 1 commit ahead of origin/main."},
+		{"ahead", func(*world) {}, "origin/feature is 1 commit ahead of origin/main.",
+			"and the commit you audit (%s) was 1 commit ahead of it. A deployment built from origin/main doesn't include those commits yet.", true},
 		{"equal", func(w *world) {
 			testutil.Git(w.t, w.repo.Clone(w.t), "push", "--quiet", "origin", "origin/feature:refs/heads/main")
-		}, "origin/feature is even with origin/main."},
+		}, "origin/feature is even with origin/main.",
+			"it was the same commit as the one you audit (%s).", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
@@ -105,7 +115,29 @@ func TestUpstreamNothingToDo(t *testing.T) {
 				t.Error("nothing may move")
 			}
 			w.outHas(tc.want)
+			prompt, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", "claude-audit.prompt.md"))
+			if want := fmt.Sprintf(tc.prompt, head[:12]); !strings.Contains(string(prompt), want) {
+				t.Errorf("the audit prompt lacks %q:\n%s", want, prompt)
+			}
+			const advice = "merge feature into main (merge commit, not squash). The next run fast-forwards."
+			report := w.report()
+			if got := strings.HasSuffix(report, "\n**Next:** "+advice+"\n"); got != tc.advice {
+				t.Errorf("report ends with the advice: %v, want %v:\n%s", got, tc.advice, report)
+			}
+			if strings.Contains(w.out.String(), advice) != tc.advice {
+				t.Errorf("the terminal shows the advice: want %v", tc.advice)
+			}
 		})
+	}
+}
+
+func TestUpstreamOffInPrompts(t *testing.T) {
+	w := newWorld(t)
+	w.cleanRound(1)
+	w.expect(w.start(""), engine.ExitDone)
+	prompt, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", "codex-audit.prompt.md"))
+	if !strings.Contains(string(prompt), "Upstream branch: none is set, so twokey doesn't compare this commit with another branch.") {
+		t.Errorf("prompt:\n%s", prompt)
 	}
 }
 

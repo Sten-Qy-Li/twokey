@@ -4,6 +4,8 @@ Audit the repository at commit ${commit}. The question: is it ready for ${checkp
 
 This audit is blind. ${other_agent} is auditing the same commit right now; you won't see its work in this step, and it won't see yours.
 
+Upstream branch: ${upstream_status}
+
 1. Read the requirements and every source they list.
 2. Check code, tests, configuration and documentation against each requirement. Run what you need to run, in a copy under your scratch folder whenever it would write anything.
 3. If earlier rounds of this run fixed findings (see History), check that each fix works.

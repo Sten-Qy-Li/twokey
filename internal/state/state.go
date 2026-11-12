@@ -68,14 +68,18 @@ type Gate struct {
 
 // Round is one pair of blind audits of one commit, plus what follows.
 type Round struct {
-	N         int     `json:"n"`
-	Commit    string  `json:"commit"`     // the commit both audits audit
-	RemoteSHA string  `json:"remote_sha"` // <remote>/<branch> when the round started
-	Synced    bool    `json:"synced"`     // the round's start caught up with [project] upstream (SPEC section 3)
-	Steps     []*Step `json:"steps"`
-	Published bool    `json:"published"` // audits copied out of staging and logged
-	Gate      *Gate   `json:"gate,omitempty"`
-	Verified  bool    `json:"verified"`
+	N         int    `json:"n"`
+	Commit    string `json:"commit"`     // the commit both audits audit
+	RemoteSHA string `json:"remote_sha"` // <remote>/<branch> when the round started
+	Synced    bool   `json:"synced"`     // the round's start caught up with [project] upstream (SPEC section 3)
+	// At the sync: <remote>/<upstream>, and how many commits Commit is
+	// ahead of it (DECISIONS.md D42).
+	UpstreamSHA   string  `json:"upstream_sha,omitempty"`
+	UpstreamAhead int     `json:"upstream_ahead,omitempty"`
+	Steps         []*Step `json:"steps"`
+	Published     bool    `json:"published"` // audits copied out of staging and logged
+	Gate          *Gate   `json:"gate,omitempty"`
+	Verified      bool    `json:"verified"`
 	// VerifyRetries counts the fix session's extra tries after a failed
 	// check (at most one, SPEC section 8).
 	VerifyRetries int  `json:"verify_retries"`

@@ -328,9 +328,9 @@ func (e *engine) loop(ctx context.Context) int {
 			case gate.PauseAdjudicate, gate.PauseDecision, gate.PauseRecurring:
 				goOn = e.ask(r, g)
 			case gate.StopConverged:
-				return e.finish(state.Converged)
+				return e.finish(ctx, state.Converged)
 			case gate.StopMaxRounds:
-				return e.finish(state.MaxRounds)
+				return e.finish(ctx, state.MaxRounds)
 			case gate.Fix:
 				switch {
 				case !r.IsDone(state.Fix):
@@ -435,9 +435,15 @@ func (e *engine) nextRound(ctx context.Context) bool {
 }
 
 // finish ends the run: report, a twokey log entry, and the summary.
-func (e *engine) finish(status string) int {
+func (e *engine) finish(ctx context.Context, status string) int {
 	e.update(func() { e.st.Status, e.st.Pause = status, nil })
 	report := e.report()
+	var advice string
+	if status == state.Converged {
+		if advice = e.upstreamAdvice(ctx); advice != "" {
+			report += "\n**Next:** " + advice + "\n"
+		}
+	}
 	if err := os.WriteFile(filepath.Join(e.runDir, "report.md"), []byte(report), 0o644); err != nil {
 		ui.Line(e.o.Out, ui.Warn, "Can't write report.md: "+err.Error())
 	}
@@ -447,6 +453,9 @@ func (e *engine) finish(status string) int {
 	_ = os.RemoveAll(e.staging)
 	if status == state.Converged {
 		ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Converged in round %d: both agents cleared %s.", e.st.Current().N, short(e.st.Current().Commit)))
+		if advice != "" {
+			ui.Next(e.o.Out, advice)
+		}
 	} else {
 		ui.Line(e.o.Out, ui.Warn, fmt.Sprintf("Stopped after round %d, the last one, with findings left.", e.st.Current().N))
 		ui.Next(e.o.Out, "read report.md, then twokey resume --more-rounds 1 if you want another round")

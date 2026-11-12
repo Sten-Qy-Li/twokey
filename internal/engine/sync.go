@@ -57,8 +57,51 @@ func (e *engine) sync(ctx context.Context, r *state.Round) bool {
 		return e.fastForward(ctx, r, rb, ru, behind)
 	}
 	ui.Line(e.o.Out, ui.OK, what)
-	e.update(func() { r.Commit, r.RemoteSHA, r.Synced = rb, rb, true })
+	e.update(func() {
+		r.Commit, r.RemoteSHA, r.Synced = rb, rb, true
+		r.UpstreamSHA, r.UpstreamAhead = ru, ahead
+	})
 	return true
+}
+
+// upstreamStatus tells the agents how the round's commit stood to
+// <remote>/<upstream> when the round started (DECISIONS.md D42). Both blind
+// audits get the same text, so they judge checks against a live deployment
+// the same way.
+func (e *engine) upstreamStatus(r *state.Round) string {
+	up := e.cfg.Project.Upstream
+	if up == "" {
+		return "none is set, so twokey doesn't compare this commit with another branch."
+	}
+	ref := e.cfg.Project.Remote + "/" + up
+	const same = " Both audits get this same note. Judge checks against a live deployment with it in mind."
+	switch {
+	case r.UpstreamSHA == "":
+		return fmt.Sprintf("%s. twokey hasn't compared this commit with it yet.", ref)
+	case r.UpstreamAhead == 0:
+		return fmt.Sprintf("%s. When this round started, it was the same commit as the one you audit (%s). "+
+			"A deployment built from %s runs this commit once it has finished deploying.%s", ref, short(r.Commit), ref, same)
+	default:
+		return fmt.Sprintf("%s. When this round started, it was %s, and the commit you audit (%s) was %s ahead of it. "+
+			"A deployment built from %s doesn't include those commits yet.%s",
+			ref, short(r.UpstreamSHA), short(r.Commit), plural(r.UpstreamAhead, "commit"), ref, same)
+	}
+}
+
+// upstreamAdvice is the report's last line after a converged run whose
+// branch has commits the upstream lacks (DECISIONS.md D42). It is "" when
+// there is nothing to merge.
+func (e *engine) upstreamAdvice(ctx context.Context) string {
+	up := e.cfg.Project.Upstream
+	if up == "" {
+		return ""
+	}
+	_ = e.repo.Fetch(ctx, e.st.Remote) // best effort: the last fetch is recent anyway
+	ahead, _, err := e.repo.AheadBehind(ctx, "HEAD", "refs/remotes/"+e.st.Remote+"/"+up)
+	if err != nil || ahead == 0 {
+		return ""
+	}
+	return fmt.Sprintf("merge %s into %s (merge commit, not squash). The next run fast-forwards.", e.st.Branch, up)
 }
 
 // fastForward moves the branch from 'from' to the upstream's commit: first
@@ -84,6 +127,7 @@ func (e *engine) fastForward(ctx context.Context, r *state.Round, from, to strin
 	note := fmt.Sprintf("Round %d: fast-forwarded %s from %s to %s (%s from %s/%s).", r.N, branch, short(from), short(to), plural(n, "commit"), remote, up)
 	e.update(func() {
 		r.Commit, r.RemoteSHA, r.Synced = to, to, true
+		r.UpstreamSHA, r.UpstreamAhead = to, 0
 		e.st.Notes = append(e.st.Notes, note)
 	})
 	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Fast-forwarded %s to %s/%s and pushed it: %s -> %s (%s).", branch, remote, up, short(from), short(to), plural(n, "commit")))
