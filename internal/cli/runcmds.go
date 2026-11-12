@@ -41,7 +41,7 @@ func project(ctx context.Context, env Env, configFlag string) (string, *config.C
 		}
 		return "", nil, false
 	case err != nil:
-		ui.Line(env.Out, ui.Fail, err.Error())
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
 		ui.Next(env.Out, "twokey init")
 		return "", nil, false
 	}
@@ -105,7 +105,7 @@ func runRun(ctx context.Context, args []string, env Env) int {
 	}
 	o, err := engineOptions(env, root, cfg, *fake, *autopilot || cfg.Loop.Mode == "autopilot", *maxRounds)
 	if err != nil {
-		ui.Line(env.Out, ui.Fail, err.Error())
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
 		return 1
 	}
 	return engine.Start(ctx, o)
@@ -127,7 +127,7 @@ func runResume(ctx context.Context, args []string, env Env) int {
 	}
 	o, err := engineOptions(env, root, cfg, *fake, *autopilot, 0)
 	if err != nil {
-		ui.Line(env.Out, ui.Fail, err.Error())
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
 		return 1
 	}
 	return engine.Resume(ctx, o, *runID, *more)
@@ -154,12 +154,12 @@ func runRender(ctx context.Context, args []string, env Env) int {
 	}
 	o, err := engineOptions(env, root, cfg, "", false, 0)
 	if err != nil {
-		ui.Line(env.Out, ui.Fail, err.Error())
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
 		return 1
 	}
 	out, err := engine.Render(ctx, o, fs.Arg(0), *agent, *round)
 	if err != nil {
-		ui.Line(env.Out, ui.Fail, err.Error())
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
 		return 1
 	}
 	fmt.Fprint(env.Out, out)
@@ -233,8 +233,13 @@ func runStatus(ctx context.Context, args []string, env Env) int {
 			fmt.Fprint(env.Out, out)
 			return 0
 		}
+		if errors.Is(err, engine.ErrNoRuns) {
+			fmt.Fprintln(env.Out, "There are no twokey runs in this repository yet.")
+			ui.Next(env.Out, "twokey run")
+			return 0
+		}
 	}
-	ui.Line(env.Out, ui.Fail, err.Error())
+	ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
 	return 1
 }
 
@@ -257,6 +262,6 @@ func runReport(ctx context.Context, args []string, env Env) int {
 			return 0
 		}
 	}
-	ui.Line(env.Out, ui.Fail, err.Error())
+	ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
 	return 1
 }

@@ -5,6 +5,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"unicode"
 )
 
 // Status is the label in front of a message.
@@ -48,4 +49,14 @@ func Next(w io.Writer, msg string) {
 // Detail prints an indented line under a status line.
 func Detail(w io.Writer, msg string) {
 	fmt.Fprintf(w, "%-7s %s\n", "", msg)
+}
+
+// Sentence starts an error message with a capital letter, for showing it
+// as a sentence. Go error strings start in lower case.
+func Sentence(msg string) string {
+	r := []rune(msg)
+	if len(r) > 0 {
+		r[0] = unicode.ToUpper(r[0])
+	}
+	return string(r)
 }

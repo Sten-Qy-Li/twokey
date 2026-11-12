@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -268,6 +269,9 @@ func TestHeartbeat(t *testing.T) {
 
 func TestStatusAndReport(t *testing.T) {
 	w := newWorld(t)
+	if _, err := engine.Status(w.opts("", 0), ""); !errors.Is(err, engine.ErrNoRuns) {
+		t.Errorf("before the first run: %v", err)
+	}
 	w.cleanRound(1)
 	w.file(1, "codex-audit.json", "not json")
 	w.expect(w.start(""), engine.ExitPaused)

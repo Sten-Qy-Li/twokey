@@ -191,6 +191,9 @@ func Start(ctx context.Context, o Options) int {
 	return e.loop(ctx)
 }
 
+// ErrNoRuns means the repository has no twokey runs yet.
+var ErrNoRuns = errors.New("there are no runs")
+
 // FindRun returns the run folder for an ID, or the latest run if id is "".
 func FindRun(runRoot, id string) (string, error) {
 	runs := filepath.Join(runRoot, "runs")
@@ -203,7 +206,7 @@ func FindRun(runRoot, id string) (string, error) {
 	}
 	entries, err := os.ReadDir(runs)
 	if err != nil {
-		return "", fmt.Errorf("there are no runs in %s yet", runRoot)
+		return "", fmt.Errorf("%w in %s yet", ErrNoRuns, runRoot)
 	}
 	var names []string
 	for _, en := range entries {
@@ -212,7 +215,7 @@ func FindRun(runRoot, id string) (string, error) {
 		}
 	}
 	if len(names) == 0 {
-		return "", fmt.Errorf("there are no runs in %s yet", runRoot)
+		return "", fmt.Errorf("%w in %s yet", ErrNoRuns, runRoot)
 	}
 	sort.Strings(names) // run IDs start with the UTC time
 	return filepath.Join(runs, names[len(names)-1]), nil
@@ -223,11 +226,11 @@ func Resume(ctx context.Context, o Options, runID string, moreRounds int) int {
 	e := newEngine(o)
 	dir, err := FindRun(e.runRoot, runID)
 	if err != nil {
-		ui.Line(o.Out, ui.Fail, err.Error())
+		ui.Line(o.Out, ui.Fail, ui.Sentence(err.Error()))
 		return ExitError
 	}
 	if e.st, err = state.Load(dir); err != nil {
-		ui.Line(o.Out, ui.Fail, err.Error())
+		ui.Line(o.Out, ui.Fail, ui.Sentence(err.Error()))
 		return ExitError
 	}
 	e.setRun(e.st.RunID)
