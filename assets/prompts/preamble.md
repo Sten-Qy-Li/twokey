@@ -6,7 +6,9 @@ Repository: ${repo_path}
 Branch: ${branch}. Never switch branches, never touch ${protected_branches}, never create a merge request or pull request.
 Milestone: ${checkpoint_label}
 Requirements: ${requirements_path} and every source it lists. Fetch the sources yourself in this step. Where sources conflict irreconcilably, the later week wins.
+Open the URLs listed in the requirements file directly, not through search results.
 Network: if curl or PowerShell can't make an HTTPS request in your sandbox, use Node.js instead (for example node -e "fetch('https://example.com/').then(r => r.text()).then(t => console.log(t))"), or your web search tool.
+Sandbox limits: ${sandbox_limits}
 Extra folders you may read but must not change: ${extra_read_dirs}
 
 Hard rules:

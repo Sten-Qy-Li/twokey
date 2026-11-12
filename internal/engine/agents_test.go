@@ -296,3 +296,30 @@ func TestStatusAndReport(t *testing.T) {
 		t.Error("an unknown run must be an error")
 	}
 }
+
+// The sandbox check at the start of a run (D51) tells Codex which checks
+// to record as not verified; Claude isn't told anything.
+func TestSandboxLimitsInPrompts(t *testing.T) {
+	w := newWorld(t)
+	w.cleanRound(1)
+	o := w.opts("", 0)
+	o.Sandbox = func(context.Context) []runner.SandboxResult {
+		return []runner.SandboxResult{
+			{Name: "git ls-remote", Status: runner.SandboxLimited, Detail: "Access is denied."},
+			{Name: "docker", Status: runner.SandboxUntested, Detail: "it isn't running"},
+		}
+	}
+	w.expect(engine.Start(t.Context(), o), engine.ExitDone)
+	if l := w.state().CodexLimits; len(l) != 1 || l[0] != "git ls-remote (Access is denied.)" {
+		t.Errorf("limits %v", l)
+	}
+	w.outHas("[WARN]  Codex can't run these in its sandbox: git ls-remote.")
+	codex, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", "codex-audit.prompt.md"))
+	claude, _ := os.ReadFile(filepath.Join(w.runDir(), "r1", "claude-audit.prompt.md"))
+	if !strings.Contains(string(codex), "Sandbox limits: these commands don't work in your sandbox: git ls-remote (Access is denied.). Don't retry them") {
+		t.Errorf("codex prompt:\n%s", codex)
+	}
+	if !strings.Contains(string(claude), "Sandbox limits: none known.") {
+		t.Errorf("claude prompt:\n%s", claude)
+	}
+}

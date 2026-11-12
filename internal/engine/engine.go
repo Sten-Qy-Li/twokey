@@ -80,6 +80,9 @@ type Options struct {
 	Docker      Cleaner
 	Heartbeat   time.Duration                                   // how often to print running steps; 0 = every minute
 	Sleep       func(ctx context.Context, d time.Duration) bool // waits for a usage limit; false = stopped
+	// Sandbox tries commands in Codex's sandbox at the start of a run
+	// (D51). nil = the real check, on Windows, with real agents only.
+	Sandbox func(ctx context.Context) []runner.SandboxResult
 }
 
 type engine struct {
@@ -183,6 +186,7 @@ func Start(ctx context.Context, o Options) int {
 		RunID: id, Started: e.o.Now().UTC(), Mode: mode, MaxRounds: maxRounds,
 		Branch: e.cfg.Project.Branch, Remote: e.cfg.Project.Remote, Status: state.Running,
 		ProtectedSHAs: protected, Decisions: map[string]string{}, Rulings: map[string]string{},
+		CodexLimits: e.probeSandbox(ctx),
 	}
 	e.st.NewRound(head, head)
 	e.save()

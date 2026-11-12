@@ -12,7 +12,7 @@ func allVars() map[string]string {
 	v := map[string]string{}
 	for _, k := range []string{
 		"run_id", "round", "max_rounds", "agent_name", "other_agent", "repo_path", "branch", "protected_branches",
-		"checkpoint_label", "requirements_path", "extra_read_dirs", "log_file", "commit", "upstream_status", "scratch_dir",
+		"checkpoint_label", "requirements_path", "extra_read_dirs", "log_file", "commit", "upstream_status", "sandbox_limits", "scratch_dir",
 		"container_prefix", "port_range", "history", "decisions", "id_prefix",
 		"codex_audit_path", "claude_audit_path", "convergence_path", "prior_merged_paths", "fix_list", "p3_rule",
 		"verify_commands", "disputes",

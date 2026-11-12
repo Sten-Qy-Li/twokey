@@ -23,6 +23,7 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/logfile"
 	"github.com/Sten-Qy-Li/twokey/internal/paths"
 	"github.com/Sten-Qy-Li/twokey/internal/proc"
+	"github.com/Sten-Qy-Li/twokey/internal/runner"
 	"github.com/Sten-Qy-Li/twokey/internal/ui"
 	"github.com/Sten-Qy-Li/twokey/internal/upstream"
 	"github.com/Sten-Qy-Li/twokey/internal/version"
@@ -92,6 +93,10 @@ func Run(ctx context.Context, o Options) int {
 	if cfg != nil && root != "" {
 		d.section("Repository")
 		d.checkRepo(root, cfg)
+		if d.GOOS == "windows" && d.found["codex"] && cfg.Codex.Sandbox != "danger-full-access" {
+			d.section("Codex sandbox (no model call)")
+			d.checkCodexSandbox(root, cfg)
+		}
 	}
 
 	d.section("Folders and services")
@@ -413,6 +418,31 @@ func (d *doctor) checkUpstream(ctx context.Context, repo gitx.Repo, p config.Pro
 			fmt.Sprintf("merge %s into %s through a merge request with a merge commit (not squash).", p.Branch, p.Upstream))
 	default:
 		d.ok(msg)
+	}
+}
+
+// checkCodexSandbox tries the commands Codex audits use inside Codex's
+// sandbox, with "codex sandbox" (D51). A command that fails only there is a
+// [WARN]: twokey's prompts tell Codex to record those checks as not
+// verified.
+func (d *doctor) checkCodexSandbox(root string, cfg *config.Config) {
+	ctx, cancel := context.WithTimeout(d.ctx, 3*time.Minute)
+	defer cancel()
+	var limited []string
+	for _, r := range runner.ProbeCodexSandbox(ctx, d.Runner, cfg, root) {
+		switch r.Status {
+		case runner.SandboxOK:
+			d.ok("Codex's sandbox can run " + r.Name)
+		case runner.SandboxLimited:
+			limited = append(limited, r.Name)
+			ui.Detail(d.Out, fmt.Sprintf("%s fails in Codex's sandbox: %s", r.Name, r.Detail))
+		default:
+			ui.Detail(d.Out, fmt.Sprintf("%s: not tested, because %s", r.Name, r.Detail))
+		}
+	}
+	if len(limited) > 0 {
+		d.warn("Codex can't run these in its sandbox: "+strings.Join(limited, ", ")+".",
+			"nothing to do now: twokey's prompts tell Codex to record those checks as not verified instead of retrying.")
 	}
 }
 

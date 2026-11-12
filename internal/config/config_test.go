@@ -85,6 +85,7 @@ func TestProblems(t *testing.T) {
 		{name: "upstream is branch", file: strings.Replace(minimal, "[project]\n", "[project]\nupstream = \"feature\"\n", 1), want: `[project] upstream must be another branch than branch (both are "feature"), or "" for off.`},
 		{name: "bad upstream", file: strings.Replace(minimal, "[project]\n", "[project]\nupstream = \"a..b\"\n", 1), want: `[project] upstream is not a valid branch name (got "a..b")`},
 		{name: "extra dir relative", file: strings.Replace(minimal, "[project]\n", "[project]\nextra_read_dirs = [\"slides\"]\n", 1), want: `[project] extra_read_dirs: "slides" must be a full path`},
+		{name: "web search", extra: "[codex]\nweb_search = \"on\"\n", want: `[codex] web_search must be "" (Codex's default), "disabled", "cached", "indexed" or "live" (got "on").`},
 		{name: "mode", extra: "[loop]\nmode = \"auto\"\n", want: `[loop] mode must be "stepper" or "autopilot" (got "auto").`},
 		{name: "max rounds", extra: "[loop]\nmax_rounds = 0\n", want: "[loop] max_rounds must be a whole number from 1 to 20 (got 0)."},
 		{name: "sandbox", extra: "[codex]\nsandbox = \"full\"\n", want: `[codex] sandbox must be "read-only", "workspace-write" or "danger-full-access" (got "full").`},

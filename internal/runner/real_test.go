@@ -247,3 +247,72 @@ func TestRealClaudeFailures(t *testing.T) {
 }
 
 func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) }
+
+func TestCodexSandboxArgs(t *testing.T) {
+	c := config.Default().Codex
+	got := CodexSandboxArgs(c, `C:\repo`, []string{`C:\git.exe`, "ls-remote"})
+	want := []string{"sandbox", "-c", "sandbox_mode='workspace-write'", "-c", "notify=[]",
+		"-c", "sandbox_workspace_write.network_access=true", "-C", `C:\repo`, "--", `C:\git.exe`, "ls-remote"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+// probeProc plays git, docker and codex sandbox for ProbeCodexSandbox.
+type probeProc struct {
+	fail map[string]bool // "outside git", "inside docker", ...
+	ran  []string
+}
+
+func (p *probeProc) LookPath(file string) (string, error) { return "/fake/" + file, nil }
+func (p *probeProc) Run(_ context.Context, c proc.Cmd) proc.Result {
+	where, what := "outside", strings.TrimPrefix(c.Name, "/fake/")
+	if what == "codex" {
+		where, what = "inside", strings.TrimPrefix(c.Args[indexOf(c.Args, "--")+1], "/fake/")
+	}
+	p.ran = append(p.ran, where+" "+what)
+	if p.fail[where+" "+what] {
+		return proc.Result{ExitCode: 1, Stderr: "boom\nAccess is denied.", Err: errors.New("exit 1")}
+	}
+	return proc.Result{Stdout: "ok"}
+}
+
+func indexOf(list []string, s string) int {
+	for i, x := range list {
+		if x == s {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestProbeCodexSandbox(t *testing.T) {
+	cfg := config.Default()
+	p := &probeProc{fail: map[string]bool{"inside git": true, "outside docker": true}}
+	got := ProbeCodexSandbox(t.Context(), p, cfg, `C:\repo`)
+	want := []SandboxResult{
+		{Name: "git ls-remote", Status: SandboxLimited, Detail: "Access is denied."},
+		{Name: "docker", Status: SandboxUntested, Detail: "it doesn't work outside the sandbox either: Access is denied."},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got  %+v\nwant %+v", got, want)
+	}
+	if strings.Join(p.ran, ", ") != "outside git, inside git, outside docker" {
+		t.Errorf("ran %v: docker must not be tried inside when it fails outside", p.ran)
+	}
+	if l := Limited(got); len(l) != 1 || l[0].Name != "git ls-remote" {
+		t.Errorf("limited %+v", l)
+	}
+	cfg.Codex.Sandbox = "danger-full-access"
+	if ProbeCodexSandbox(t.Context(), p, cfg, `C:\repo`) != nil {
+		t.Error("no sandbox, nothing to test")
+	}
+}
+
+func TestCodexArgsWebSearch(t *testing.T) {
+	c := config.Default().Codex
+	c.WebSearch = "live"
+	if args := strings.Join(CodexArgs(c, CodexParams{Resume: "t"}), " "); !strings.Contains(args, "-c web_search='live'") {
+		t.Errorf("args %s", args)
+	}
+}

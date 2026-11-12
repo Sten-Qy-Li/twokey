@@ -46,6 +46,9 @@ func CodexArgs(c config.Codex, p CodexParams) []string {
 	if c.Sandbox == "workspace-write" && c.Network {
 		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
 	}
+	if c.WebSearch != "" {
+		args = append(args, "-c", "web_search="+tomlString(c.WebSearch))
+	}
 	for _, o := range p.Off {
 		args = append(args, "-c", o)
 	}

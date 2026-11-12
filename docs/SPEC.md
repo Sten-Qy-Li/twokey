@@ -251,6 +251,8 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - **Known Windows problem:** openai/codex issue #34958 reports that on native Windows, `codex exec --sandbox workspace-write` can reject writes inside the working directory. `doctor --smoke` must test the configured sandbox for real: a write to the scratch folder, plus one network request.
 - `--json` makes stdout a JSONL event stream (`thread.started` with `thread_id`, `turn.started`, `turn.completed` with usage, `turn.failed`, `item.*`, `error`). `--output-schema <file>` makes the final answer match the schema. `-o <file>` writes the final message to a file.
 - twokey passes `-c notify=[]`, so the owner's Codex `notify` program doesn't run after every turn of an unattended step (D9).
+- `[codex] web_search` (`""` = Codex's default, which is cached results) is passed as `-c web_search="<mode>"`. Codex's web search runs on OpenAI's side, so the local sandbox's network limits don't affect it (D52).
+- **Sandbox check** (D51): commands that Codex audits use may fail under the sandbox's restricted token on Windows. At the start of a run, and in `doctor`, twokey runs `git ls-remote <remote> refs/heads/<branch>` and `docker version` with `codex sandbox -c sandbox_mode=... -C <repo> -- <command>` (no model call), each first outside the sandbox. What fails only inside is saved in `state.json`, and Codex's prompts name it (`${sandbox_limits}`) and say to record those checks as not verified instead of retrying.
 - Resume: `codex exec resume <SESSION_ID> -`. The prompt is read from stdin only with the explicit `-` (D6). `resume` has no `--sandbox`, `-C` or `--add-dir`: twokey passes the sandbox as `-c sandbox_mode="<mode>"`, the writable folders as `-c sandbox_workspace_write.writable_roots=[...]`, and starts the process in the repo folder (D5). `doctor --smoke` checks that a resumed session keeps its sandbox.
 - twokey never passes `--worktree`, `--ephemeral` (sessions must be resumable) or `--dangerously-bypass-approvals-and-sandbox`, and the config refuses them in `extra_args` (D7).
 - Exit codes aren't documented. Treat a step as successful only if there was no `turn.failed`/`error` event **and** the `-o` file holds JSON that passes validation. (The source at tag `rust-v0.165.0` exits with 1 after a failed turn, and writes the `-o` file only after a completed one. `error` events also report retries, so they alone don't fail a step.)
@@ -375,6 +377,7 @@ label = "Codex - GPT-6.1-Sol"               # log heading when Codex doesn't rep
 model = ""                                  # "" = the CLI's default
 sandbox = "workspace-write"                 # see the doctor --smoke result
 network = true
+web_search = ""                             # "" = Codex's default (cached); "live" = current pages
 desktop_tools = false                       # true = allow screen and real-browser control
 extra_args = []
 ports = "56000-56499"
@@ -416,6 +419,7 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 - `[model_names]` entries are added to the built-in ones shown above.
 - `extra_args` may not contain options twokey sets itself or never uses (section 9).
 - The two port ranges may not overlap. `branch` may not be one of the `protected_branches`.
+- `[codex] web_search` is `""`, `"disabled"`, `"cached"`, `"indexed"` or `"live"`.
 - `upstream` is `""` (off) or a branch name other than `branch`. It may be, and usually is, one of the `protected_branches`: twokey only reads it, and fast-forwards `branch` to it (section 3, "Sync").
 
 `twokey init` writes this template to the repository root. It fills in `branch` with the current branch, and `protected_branches` with the remote's default branch, when git knows them. It refuses to overwrite an existing file, and warns if `.gitignore` doesn't ignore both the config file and `run_dir`.
@@ -427,7 +431,7 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 | Command | What it does |
 |---|---|
 | `twokey init` | Creates the config template and checks `.gitignore`. |
-| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`, and how the branch stands to `upstream`: diverged is a `[WARN]`), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one small schema-constrained call to each agent and resumes it once (D48): it tests the schema options, Codex's configured sandbox (a scratch write plus one network request), that a resumed session keeps its sandbox (a second write), that each agent can read the first bytes of a file in each extra read folder, the arguments that turn off screen and browser control, and that the repository is unchanged afterwards. twokey checks the files and bytes itself instead of trusting the answers, and shows the model each CLI reports and Claude's cost estimate. It needs the config and both CLIs; other `[FAIL]` lines don't block it. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
+| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`, and how the branch stands to `upstream`: diverged is a `[WARN]`), what Codex's sandbox can't run (a `[WARN]`, D51), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one small schema-constrained call to each agent and resumes it once (D48): it tests the schema options, Codex's configured sandbox (a scratch write plus one network request), that a resumed session keeps its sandbox (a second write), that each agent can read the first bytes of a file in each extra read folder, the arguments that turn off screen and browser control, and that the repository is unchanged afterwards. twokey checks the files and bytes itself instead of trusting the answers, and shows the model each CLI reports and Claude's cost estimate. It needs the config and both CLIs; other `[FAIL]` lines don't block it. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
 | `twokey run [--autopilot] [--max-rounds N]` | Starts a run. Refuses if preflight fails. `--fake-agents <folder>` plays scripted answers instead of calling the CLIs (tests and demos). |
 | `twokey resume [--run ID] [--more-rounds N]` | Continues the latest (or given) run. Takes `--autopilot` and `--fake-agents` like `run`. |
 | `twokey status [--run ID]` | One screen: run, status (running with its process, paused with the reason), round, each step's status, time and tries, the last gate result, and what to do next. |
@@ -494,7 +498,7 @@ These are starting points. The owner will tune them, so keep them as plain files
 - `${step_write_rule}` contains `${branch}`, so it is rendered first.
 
 Placeholders:
-- **Every step:** `${run_id}`, `${round}`, `${max_rounds}`, `${agent_name}`, `${other_agent}`, `${repo_path}`, `${branch}`, `${protected_branches}`, `${checkpoint_label}`, `${requirements_path}`, `${extra_read_dirs}`, `${log_file}`, `${commit}`, `${upstream_status}` (how the commit stood to `<remote>/<upstream>` when the round started, the same text for both blind audits; D42), `${scratch_dir}`, `${container_prefix}`, `${port_range}`, `${step_write_rule}`, `${history}`, `${decisions}`, `${id_prefix}`
+- **Every step:** `${run_id}`, `${round}`, `${max_rounds}`, `${agent_name}`, `${other_agent}`, `${repo_path}`, `${branch}`, `${protected_branches}`, `${checkpoint_label}`, `${requirements_path}`, `${extra_read_dirs}`, `${log_file}`, `${commit}`, `${upstream_status}` (how the commit stood to `<remote>/<upstream>` when the round started, the same text for both blind audits; D42), `${sandbox_limits}` (for Codex: the commands its sandbox can't run, from the check at the start of the run; otherwise "none known."; D51), `${scratch_dir}`, `${container_prefix}`, `${port_range}`, `${step_write_rule}`, `${history}`, `${decisions}`, `${id_prefix}`
 - **`convergence`, `fix` and `dispute`:** `${codex_audit_path}`, `${claude_audit_path}`, `${convergence_path}`, `${prior_merged_paths}`, `${fix_list}`, `${p3_rule}`, `${verify_commands}`, `${disputes}`
 
 ### preamble.md
@@ -507,7 +511,9 @@ Repository: ${repo_path}
 Branch: ${branch}. Never switch branches, never touch ${protected_branches}, never create a merge request or pull request.
 Milestone: ${checkpoint_label}
 Requirements: ${requirements_path} and every source it lists. Fetch the sources yourself in this step. Where sources conflict irreconcilably, the later week wins.
+Open the URLs listed in the requirements file directly, not through search results.
 Network: if curl or PowerShell can't make an HTTPS request in your sandbox, use Node.js instead (for example node -e "fetch('https://example.com/').then(r => r.text()).then(t => console.log(t))"), or your web search tool.
+Sandbox limits: ${sandbox_limits}
 Extra folders you may read but must not change: ${extra_read_dirs}
 
 Hard rules:

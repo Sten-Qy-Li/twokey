@@ -68,6 +68,7 @@ type Codex struct {
 	Model        string   `toml:"model"`
 	Sandbox      string   `toml:"sandbox"`
 	Network      bool     `toml:"network"`
+	WebSearch    string   `toml:"web_search"` // "" = Codex's default
 	DesktopTools bool     `toml:"desktop_tools"`
 	ExtraArgs    []string `toml:"extra_args"`
 	Ports        string   `toml:"ports"`

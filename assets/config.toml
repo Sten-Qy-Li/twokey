@@ -31,6 +31,7 @@ label = "Codex - GPT-6.1-Sol"               # log heading when Codex doesn't rep
 model = ""                                  # "" = the CLI's default
 sandbox = "workspace-write"                 # see the doctor --smoke result
 network = true
+web_search = ""                             # "" = Codex's default (cached); "live" = current pages
 desktop_tools = false                       # true = allow screen and real-browser control
 extra_args = []
 ports = "56000-56499"

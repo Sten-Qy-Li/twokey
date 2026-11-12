@@ -81,6 +81,9 @@ func (c *Config) Validate() Problems {
 	if !slices.Contains([]string{"read-only", "workspace-write", "danger-full-access"}, c.Codex.Sandbox) {
 		add("[codex] sandbox must be \"read-only\", \"workspace-write\" or \"danger-full-access\" (got %q).", c.Codex.Sandbox)
 	}
+	if !slices.Contains([]string{"", "disabled", "cached", "indexed", "live"}, c.Codex.WebSearch) {
+		add("[codex] web_search must be \"\" (Codex's default), \"disabled\", \"cached\", \"indexed\" or \"live\" (got %q).", c.Codex.WebSearch)
+	}
 	p = append(p, checkAgent("claude", c.Claude.Command, c.Claude.LabelPrefix, c.Claude.Label, c.Claude.ExtraArgs, claudeArgs)...)
 	if c.Claude.PermissionMode == "" || strings.ContainsAny(c.Claude.PermissionMode, " \t\r\n") {
 		add("[claude] permission_mode must be one word, such as \"auto\" (got %q).", c.Claude.PermissionMode)

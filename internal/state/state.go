@@ -138,7 +138,8 @@ type State struct {
 	Rounds        []*Round          `json:"rounds"`
 	Decisions     map[string]string `json:"decisions"`
 	Rulings       map[string]string `json:"rulings"`
-	Notes         []string          `json:"notes,omitempty"` // for the report
+	Notes         []string          `json:"notes,omitempty"`        // for the report
+	CodexLimits   []string          `json:"codex_limits,omitempty"` // commands that fail in Codex's sandbox (D51)
 }
 
 // Current returns the round in progress, or nil before round 1.

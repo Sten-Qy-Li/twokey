@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/Sten-Qy-Li/twokey/internal/invariant"
+	"github.com/Sten-Qy-Li/twokey/internal/runner"
 	"github.com/Sten-Qy-Li/twokey/internal/state"
 	"github.com/Sten-Qy-Li/twokey/internal/ui"
 	"github.com/Sten-Qy-Li/twokey/internal/upstream"
@@ -316,4 +318,38 @@ func lowerFirst(s string) string {
 		return "a step"
 	}
 	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// probeSandbox tries git ls-remote and docker in Codex's sandbox, without a
+// model call (D51). Codex's prompts name what fails, so Codex records those
+// checks as not verified instead of retrying them.
+func (e *engine) probeSandbox(ctx context.Context) []string {
+	probe := e.o.Sandbox
+	if probe == nil {
+		if e.o.FakeAgents || runtime.GOOS != "windows" {
+			return nil
+		}
+		probe = func(ctx context.Context) []runner.SandboxResult {
+			return runner.ProbeCodexSandbox(ctx, e.o.Proc, e.cfg, e.o.Root)
+		}
+	}
+	var limits, names []string
+	for _, r := range runner.Limited(probe(ctx)) {
+		limits = append(limits, fmt.Sprintf("%s (%s)", r.Name, r.Detail))
+		names = append(names, r.Name)
+	}
+	if len(limits) > 0 {
+		ui.Line(e.o.Out, ui.Warn, "Codex can't run these in its sandbox: "+strings.Join(names, ", ")+".")
+		ui.Detail(e.o.Out, "Its prompts say so, and to record those checks as not verified instead of retrying.")
+	}
+	return limits
+}
+
+// sandboxLimits is ${sandbox_limits}: what fails in the agent's sandbox.
+func (e *engine) sandboxLimits(agent string) string {
+	if agent != "codex" || len(e.st.CodexLimits) == 0 {
+		return "none known."
+	}
+	return "these commands don't work in your sandbox: " + strings.Join(e.st.CodexLimits, "; ") +
+		". Don't retry them or look for workarounds. Record what they would have checked as not verified (kind external_evidence)."
 }

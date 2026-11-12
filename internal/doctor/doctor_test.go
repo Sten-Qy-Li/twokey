@@ -19,6 +19,8 @@ import (
 type fakeRunner struct {
 	paths map[string]string      // LookPath name -> fake path
 	runs  map[string]proc.Result // "path arg arg" -> result
+	// sandbox answers "codex sandbox" calls by the command they run.
+	sandbox func(cmd string) proc.Result
 }
 
 func (f *fakeRunner) LookPath(name string) (string, error) {
@@ -32,12 +34,15 @@ func (f *fakeRunner) LookPath(name string) (string, error) {
 }
 
 func (f *fakeRunner) Run(ctx context.Context, c proc.Cmd) proc.Result {
-	if c.Name == "git" {
+	if strings.TrimSuffix(filepath.Base(c.Name), ".exe") == "git" {
 		return proc.OS{}.Run(ctx, c)
 	}
 	key := strings.TrimSpace(c.Name + " " + strings.Join(c.Args, " "))
 	if r, ok := f.runs[key]; ok {
 		return r
+	}
+	if _, cmd, ok := strings.Cut(key, " -- "); ok && strings.HasPrefix(key, "/fake/codex sandbox ") && f.sandbox != nil {
+		return f.sandbox(cmd)
 	}
 	return proc.Result{ExitCode: 1, Err: fmt.Errorf("fake: no answer for %q", key)}
 }
@@ -51,13 +56,15 @@ func healthyRunner(t *testing.T) *fakeRunner {
 			"docker": "/fake/docker", "powershell.exe": "/fake/powershell.exe",
 		},
 		runs: map[string]proc.Result{
-			"/fake/codex --version":                         ok("codex-cli 0.165.0\n"),
-			"/fake/codex exec --help":                       ok(fixture(t, "codex-0.165.0-exec-help.txt")),
-			"/fake/codex exec resume --help":                ok(fixture(t, "codex-0.165.0-exec-resume-help.txt")),
-			"/fake/claude --version":                        ok("2.1.311 (Claude Code)\n"),
-			"/fake/claude --help":                           ok(fixture(t, "claude-2.1.311-help.txt")),
-			"/fake/docker info --format {{.ServerVersion}}": ok("28.0.1\n"),
+			"/fake/codex --version":                             ok("codex-cli 0.165.0\n"),
+			"/fake/codex exec --help":                           ok(fixture(t, "codex-0.165.0-exec-help.txt")),
+			"/fake/codex exec resume --help":                    ok(fixture(t, "codex-0.165.0-exec-resume-help.txt")),
+			"/fake/claude --version":                            ok("2.1.311 (Claude Code)\n"),
+			"/fake/claude --help":                               ok(fixture(t, "claude-2.1.311-help.txt")),
+			"/fake/docker info --format {{.ServerVersion}}":     ok("28.0.1\n"),
+			"/fake/docker version --format {{.Server.Version}}": ok("28.0.1\n"),
 		},
+		sandbox: func(string) proc.Result { return ok("") },
 	}
 }
 
@@ -125,6 +132,8 @@ func TestHealthyProject(t *testing.T) {
 		"[OK]    The working tree is clean",
 		"[OK]    HEAD matches origin/feature after git fetch",
 		"[OK]    Protected branches on origin: main",
+		"[OK]    Codex's sandbox can run git ls-remote",
+		"[OK]    Codex's sandbox can run docker",
 		"[OK]    Log file local-only_logs.md: marker on line 3, UTF-8 without BOM, LF line endings",
 		"[OK]    git ignores local-only_twokey.toml",
 		"[OK]    git ignores local-only_twokey",
@@ -302,6 +311,16 @@ func TestProblems(t *testing.T) {
 				p.runner.runs["/fake/docker info --format {{.ServerVersion}}"] = proc.Result{ExitCode: 1, Err: fmt.Errorf("exit 1")}
 			},
 			want: "[WARN]  Docker is installed but not running.",
+			code: 0,
+		},
+		{
+			name: "codex sandbox blocks git and docker",
+			setup: func(t *testing.T, p *project) {
+				p.runner.sandbox = func(string) proc.Result {
+					return proc.Result{ExitCode: 1, Stderr: "Access is denied.", Err: fmt.Errorf("exit 1")}
+				}
+			},
+			want: "[WARN]  Codex can't run these in its sandbox: git ls-remote, docker.",
 			code: 0,
 		},
 		{

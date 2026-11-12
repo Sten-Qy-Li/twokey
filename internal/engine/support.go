@@ -74,6 +74,7 @@ func (e *engine) vars(r *state.Round, s *state.Step, step string) map[string]str
 		"log_file":           e.logPath,
 		"commit":             r.Commit,
 		"upstream_status":    e.upstreamStatus(r),
+		"sandbox_limits":     e.sandboxLimits(s.Agent),
 		"scratch_dir":        filepath.Join(e.o.ScratchRoot, e.st.RunID, fmt.Sprintf("r%d", r.N), s.Name),
 		"container_prefix":   containerPrefix(e.st.RunID, r.N, step, short),
 		"port_range":         ports,
