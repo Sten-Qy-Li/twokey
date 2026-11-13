@@ -62,6 +62,11 @@ func Fire(ctx context.Context, sl Slot) int {
 	if now == nil {
 		now = time.Now
 	}
+	// A start that woke the computer holds it awake from the beginning,
+	// not only once the round's loop runs (D64).
+	if o.KeepAwake != nil {
+		defer o.KeepAwake()()
+	}
 	runRoot := filepath.Join(o.Root, o.Cfg.Project.RunDir)
 	started := now()
 	rec := Record{Started: started, Test: sl.Test, Log: LogPath(runRoot, started.UTC().Format("20060102T150405Z"))}
