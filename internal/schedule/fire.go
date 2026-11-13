@@ -42,6 +42,9 @@ type Slot struct {
 	// Notify sends the one notification of a start (D67); the round's own
 	// notifications are off, so the owner gets one per start. nil = none.
 	Notify func(title, message string)
+	// Version is this twokey's version. A start refuses a development
+	// build (D68). "" = don't check (tests).
+	Version string
 }
 
 // resumable are the pauses a later slot may pick up by itself: a usage
@@ -135,6 +138,9 @@ func Fire(ctx context.Context, sl Slot) int {
 			lines = append(lines, "Switching off failed: "+err.Error()+". Run twokey schedule off.")
 		}
 		return finish(Ended, lines...)
+	case sl.Version != "" && !version.Release(sl.Version):
+		return finish(Failed, fmt.Sprintf("This twokey.exe is a development build (%s), and a schedule runs only a tagged release.", sl.Version),
+			"Next: rebuild it from a tag, or point the schedule at a release build with twokey schedule program.")
 	}
 	rec.Outcome = Running
 	_ = Append(runRoot, rec)

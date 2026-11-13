@@ -53,6 +53,7 @@ type project struct {
 	out      bytes.Buffer
 	notes    []string // notifications: title | message
 	now      time.Time
+	version  string // this twokey's version; "" = not checked
 }
 
 func newProject(t *testing.T) *project {
@@ -118,7 +119,7 @@ func (p *project) fire(test bool) int {
 	}
 	o.Notify = func(title, msg string) { p.notes = append(p.notes, "engine: "+title) } // Fire turns these off
 	return schedule.Fire(p.t.Context(), schedule.Slot{Engine: o, Console: &p.out, Tasks: p.tasks, Task: "twokey work 123456", Test: test,
-		Notify: func(title, msg string) { p.notes = append(p.notes, title+" | "+msg) }})
+		Notify: func(title, msg string) { p.notes = append(p.notes, title+" | "+msg) }, Version: p.version})
 }
 
 func (p *project) last() schedule.Record {
@@ -217,6 +218,21 @@ func TestFireSkips(t *testing.T) {
 			t.Errorf("record %+v", r)
 		}
 	})
+	t.Run("a development build", func(t *testing.T) {
+		p := newProject(t)
+		p.oneFix()
+		p.version = "v0.2.1-0.20261113150000-156bb60ad32f"
+		if code := p.fire(false); code != engine.ExitError {
+			t.Fatalf("exit %d:\n%s", code, p.out.String())
+		}
+		if r := p.last(); r.Outcome != schedule.Failed || !strings.HasPrefix(r.Lines[0], "This twokey.exe is a development build (v0.2.1-0.") || p.runs() != 0 {
+			t.Errorf("record %+v, runs %d", r, p.runs())
+		}
+		p.version = "v0.2.0-rc.8"
+		if p.fire(false); p.last().Outcome != schedule.RoundDone {
+			t.Errorf("a release build: %+v\n%s", p.last(), p.out.String())
+		}
+	})
 	t.Run("test start", func(t *testing.T) {
 		p := newProject(t)
 		p.fire(true)
@@ -237,9 +253,10 @@ func TestRender(t *testing.T) {
 	v := schedule.View{
 		Schedule: schedule.Schedule{On: true, Daily: []string{"02:00", "05:00"}, Until: "2026-11-20",
 			Since: at(1, 0).AddDate(0, 0, -1), LastLooked: at(1, 0)},
-		Task: "twokey work 123456",
-		Info: schedule.Info{Exists: true, Enabled: true, Exe: `C:\tools\twokey.exe`},
-		Exe:  `C:\tools\twokey.exe`,
+		Task:    "twokey work 123456",
+		Info:    schedule.Info{Exists: true, Enabled: true, Exe: `C:\tools\twokey.exe`},
+		Program: `C:\tools\twokey.exe`,
+		Version: "v0.2.0-rc.8",
 		History: []schedule.Record{
 			{Planned: at(2, 0), Started: at(2, 1), Outcome: schedule.RoundDone, Round: 2,
 				Lines: []string{"Round 2: fixed R2-M-01, and pushed 2 commits (abc1234).", "Automatic decision: R2-M-02 → A (twokey decide R2-M-02 <answer> changes it)."}},
@@ -252,7 +269,7 @@ func TestRender(t *testing.T) {
 	for _, want := range []string{
 		"Schedule:    on: every day at 02:00 and 05:00; until Fri 20 Nov",
 		"Next start:  Sun 15 Nov 02:00",
-		`Task:        "twokey work 123456" in Task Scheduler, enabled, runs C:\tools\twokey.exe`,
+		`Program:     C:\tools\twokey.exe (v0.2.0-rc.8)` + "\n" + `Task:        "twokey work 123456" in Task Scheduler, enabled` + "\n",
 		"Since you last looked (Sat 14 Nov 01:00):",
 		"  Sat 14 Nov 02:01  round done\n                    Round 2: fixed R2-M-01, and pushed 2 commits (abc1234).",
 		"  Sat 14 Nov 05:00  didn't start: the PC was off, asleep, on battery or logged out",
@@ -267,12 +284,24 @@ func TestRender(t *testing.T) {
 		t.Errorf("unexpected warning or missed start:\n%s", got)
 	}
 
-	v.Info.Enabled, v.Exe = false, `C:\backup\twokey.exe`
+	v.Info.Enabled, v.Info.Exe = false, `C:\backup\twokey.exe`
 	v.History, v.Schedule.LastLooked = nil, at(7, 0)
 	got = schedule.Render(v)
-	for _, want := range []string{"[WARN] The schedule is on, but the task is disabled", "[WARN] The task runs another twokey.exe than this one", "Since you last looked (Sat 14 Nov 07:00):\n  Nothing."} {
+	for _, want := range []string{"[WARN] The schedule is on, but the task is disabled", `[WARN] The task runs C:\backup\twokey.exe instead.`, "Since you last looked (Sat 14 Nov 07:00):\n  Nothing."} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the view lacks %q:\n%s", want, got)
 		}
+	}
+
+	// The program a night run would refuse, or couldn't start.
+	v.Info.Exe, v.Version = v.Program, "v0.2.1-0.20261113150000-156bb60ad32f"
+	got = schedule.Render(v)
+	if want := "Program:     C:\\tools\\twokey.exe (v0.2.1-0.20261113150000-156bb60ad32f)\n[FAIL] It's a development build, so every start refuses to run."; !strings.Contains(got, want) {
+		t.Errorf("the view lacks %q:\n%s", want, got)
+	}
+	v.Version, v.Unusable = "", `C:\tools\twokey.exe doesn't exist`
+	got = schedule.Render(v)
+	if want := "[FAIL] C:\\tools\\twokey.exe doesn't exist, so every start fails.\n       Next: twokey schedule program"; !strings.Contains(got, want) {
+		t.Errorf("the view lacks %q:\n%s", want, got)
 	}
 }

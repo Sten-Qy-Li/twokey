@@ -51,7 +51,9 @@ type Env struct {
 	StagingRoot, ScratchRoot string
 	GOOS                     string           // "" = runtime.GOOS (tests)
 	Now                      func() time.Time // nil = time.Now (tests)
-	Exe                      string           // "" = this twokey.exe; the program a schedule's task runs (tests)
+	Exe                      string           // "" = this twokey.exe (tests)
+	// ExeVersion reads a twokey.exe's version; nil = version.OfFile (tests).
+	ExeVersion func(file string) (string, error)
 }
 
 // Main runs twokey and returns the exit code.

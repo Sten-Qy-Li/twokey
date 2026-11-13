@@ -3,6 +3,8 @@ TWOKEY_BRIEF.md
 
 # Local builds and test output.
 /bin/
+# The tagged build that the owner's schedules run (D68).
+/release/
 /dist/
 *.test
 *.out

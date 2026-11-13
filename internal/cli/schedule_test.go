@@ -15,6 +15,7 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/proc"
 	"github.com/Sten-Qy-Li/twokey/internal/schedule"
 	"github.com/Sten-Qy-Li/twokey/internal/testutil"
+	"github.com/Sten-Qy-Li/twokey/internal/version"
 )
 
 // fakeScheduler runs git for real and plays schtasks.exe, keeping the
@@ -74,17 +75,23 @@ func TestScheduleCommands(t *testing.T) {
 	r.WriteFile(t, "local-only_twokey.toml", "[project]\nbranch = \"feature\"\n\n[checkpoint]\nlabel = \"Milestone 1\"\n"+
 		"requirements_file = \"local-only_req.md\"\n\n[verify]\ncommands = []\n")
 	f := &fakeScheduler{tasks: map[string]string{}}
-	exe := filepath.Join(t.TempDir(), "twokey.exe") // the program the task runs must exist
-	if err := os.WriteFile(exe, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
+	dir := t.TempDir()
+	exe, dev := filepath.Join(dir, "release", "twokey.exe"), filepath.Join(dir, "bin", "twokey.exe")
+	versions := map[string]string{exe: "v0.2.0-rc.8", dev: "v0.2.1-0.20261113150000-156bb60ad32f"}
+	exeVersion := func(file string) (string, error) {
+		if v, ok := versions[file]; ok {
+			return v, nil
+		}
+		return version.OfFile(file)
 	}
+	self := exe // the twokey.exe that runs the command
 	now := time.Date(2026, 11, 13, 15, 0, 0, 0, time.Local)
 	goos := "windows"
 	sched := func(args ...string) (string, int) {
 		t.Helper()
 		var out bytes.Buffer
 		code := Run(t.Context(), append([]string{"schedule"}, args...), Env{Dir: r.Dir, Out: &out, Err: &out, Runner: f,
-			GOOS: goos, Now: func() time.Time { return now }, Exe: exe})
+			GOOS: goos, Now: func() time.Time { return now }, Exe: self, ExeVersion: exeVersion})
 		return out.String(), code
 	}
 	expect := func(args []string, code int, want ...string) {
@@ -113,8 +120,19 @@ func TestScheduleCommands(t *testing.T) {
 		t.Fatalf("an off schedule must not touch Task Scheduler: %v", f.calls)
 	}
 
+	// A schedule runs a tagged release build, not the development build
+	// (D68).
+	self = dev
+	expect([]string{"on"}, 1, "[FAIL]  "+dev+" is a development build (v0.2.1-0.20261113150000-156bb60ad32f), and a schedule runs only a tagged release.",
+		"Next: twokey schedule program <a release build of twokey.exe>")
+	expect([]string{"program", dev}, 1, "is a development build")
+	expect([]string{"program", filepath.Join(dir, "nothing.exe")}, 1, "[FAIL]  "+filepath.Join(dir, "nothing.exe")+" doesn't exist.")
+	expect([]string{"program", exe}, 0, "Schedule (off): every day at 02:00; until Fri 20 Nov.", "The starts run "+exe+" (v0.2.0-rc.8).")
+	if len(f.calls) != 0 {
+		t.Fatalf("an off schedule must not touch Task Scheduler: %v", f.calls)
+	}
 	expect([]string{"on"}, 0, "The schedule is on: every day at 02:00; until Fri 20 Nov. Next start: Sat 14 Nov 02:00.",
-		"Next: twokey schedule test")
+		"with "+exe+" (v0.2.0-rc.8)", "Next: twokey schedule test")
 	cfg := filepath.Join(top, "local-only_twokey.toml")
 	x := f.tasks[name]
 	for _, want := range []string{"<Command>" + exe + "</Command>", `<Arguments>schedule fire --config "` + cfg + `"</Arguments>`,
@@ -128,7 +146,7 @@ func TestScheduleCommands(t *testing.T) {
 		t.Error("adding a time to a schedule that is on must update the task")
 	}
 	expect([]string{"status"}, 0, "Schedule:    on: every day at 02:00 and 13:30; until Fri 20 Nov", "Next start:  Sat 14 Nov 02:00",
-		"in Task Scheduler, enabled, runs "+exe, "Starts so far:\n  Nothing.")
+		"Program:     "+exe+" (v0.2.0-rc.8)\nTask:        \""+name+"\" in Task Scheduler, enabled\n", "Starts so far:\n  Nothing.")
 
 	expect([]string{"off"}, 0, "The schedule is off. No new round starts.")
 	if !strings.Contains(f.tasks[name], "<Enabled>false</Enabled>\r\n    <Hidden>") {
@@ -140,7 +158,7 @@ func TestScheduleCommands(t *testing.T) {
 	}
 
 	expect([]string{"test"}, 0, "Task Scheduler starts a test at 15:02.")
-	if x := f.tasks[schedule.CheckTaskName(name)]; !strings.Contains(x, "schedule fire --test") {
+	if x := f.tasks[schedule.CheckTaskName(name)]; !strings.Contains(x, "schedule fire --test") || !strings.Contains(x, "<Command>"+exe+"</Command>") {
 		t.Errorf("test task:\n%s", x)
 	}
 	expect([]string{"remove", "all"}, 0, "Schedule (off): no start times.")

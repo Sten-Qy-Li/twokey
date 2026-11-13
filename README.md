@@ -30,7 +30,7 @@ Early development. Stepper mode with real agents works; v0.2 adds unattended rou
 | `twokey resume` | Continues a paused or stopped run. |
 | `twokey decide <ID> <answer>` | Answers a finding that autopilot left for you, or changes a decision it made for you. |
 | `twokey stop [--now]` | Stops a run that is going, before its next agent step (or at once with `--now`). |
-| `twokey schedule ...` | Starts one unattended round at set times with Windows Task Scheduler: `add 02:00`, `until 2026-11-20`, `on`, `off`, `status` (what ran, and what waits for you), `test`. |
+| `twokey schedule ...` | Starts one unattended round at set times with Windows Task Scheduler: `add 02:00`, `until 2026-11-20`, `program`, `on`, `off`, `status` (what ran, and what waits for you), `test`. See [Scheduled rounds](#scheduled-rounds). |
 | `twokey status` | Shows the current run on one screen. |
 | `twokey report` | Rebuilds a run's report. |
 | `twokey render <step>` | Prints a step's prompt without running it, for tuning the templates. |
@@ -65,6 +65,30 @@ twokey doctor    # fix every [FAIL] line, then run it again
 ```
 
 Make sure git ignores the config file and the run folder. `twokey init` tells you the line to add to `.gitignore` if it doesn't.
+
+## Scheduled rounds
+
+`twokey schedule` starts one unattended round at set times, with Windows Task Scheduler. In the project's repository:
+
+```sh
+twokey schedule add 02:00          # every day; or once: twokey schedule add 2026-11-14 13:30
+twokey schedule until 2026-11-20   # optional: the last day a round may start
+twokey schedule on
+twokey schedule test               # a start in 2 minutes that runs the checks only, without agents
+twokey schedule status             # in the morning: what ran, and what waits for you
+```
+
+A start needs you logged in (a locked screen is fine) and the PC plugged in. To stop a round that has started: `twokey stop`. To stop future rounds: `twokey schedule off`.
+
+A schedule runs only a tagged release of twokey, never a development build. `twokey schedule on` takes the `twokey.exe` you run it with, unless `twokey schedule program <twokey.exe>` set one. A `go install ...@<version>` build is a release. In a clone, build a tag into a folder of its own, so that rebuilding your working copy never touches the program a schedule runs:
+
+```sh
+git worktree add --detach ../twokey-build v0.2.0
+go -C ../twokey-build build -o "$PWD/release/twokey.exe" ./cmd/twokey
+git worktree remove ../twokey-build
+```
+
+Replacing that file with a newer tag's build updates what the next start runs. `twokey schedule status` shows the program and its version.
 
 ## Safety
 

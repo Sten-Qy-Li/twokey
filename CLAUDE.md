@@ -44,6 +44,14 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 go build -o bin/twokey.exe ./cmd/twokey   # local build; bin/ is git-ignored
 ```
 
+`release/twokey.exe` (git-ignored) is the program the owner's schedules run (D68). Update it only from a tag:
+
+```sh
+wt="$(mktemp -d)/twokey" && git worktree add --detach "$wt" <tag> &&
+  CGO_ENABLED=0 go -C "$wt" build -o "$PWD/release/twokey.exe" ./cmd/twokey &&
+  git worktree remove "$wt" && release/twokey.exe version   # prints <tag>
+```
+
 ## Conventions
 - Pure Go, `CGO_ENABLED=0`. Runtime dependencies: `golang.org/x/sys` and `github.com/BurntSushi/toml` only. Ask before adding another.
 - Pure logic (the gate, config validation, log insertion, template rendering, help-text parsing) lives in functions without I/O and gets table-driven tests. OS calls stay in thin wrappers behind interfaces (`proc.Runner`).

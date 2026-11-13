@@ -17,6 +17,7 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/lock"
 	"github.com/Sten-Qy-Li/twokey/internal/schedule"
 	"github.com/Sten-Qy-Li/twokey/internal/ui"
+	"github.com/Sten-Qy-Li/twokey/internal/version"
 )
 
 const scheduleUsage = `Usage: twokey schedule <command> [options]
@@ -29,7 +30,8 @@ Commands:
   add <YYYY-MM-DD> <HH:MM>  add a start time, once
   remove <time> | all       remove a start time
   until <YYYY-MM-DD> | none the last day a round may start; then the schedule switches itself off
-  on                        start the rounds at those times
+  program <twokey.exe>      the twokey.exe the starts run: a tagged release build, not your development build
+  on                        start the rounds at those times (with this twokey.exe, unless program set one)
   off                       no new rounds; a round that is running carries on (twokey stop stops it)
   status                    the schedule, what the last starts did, and what waits for you
   test                      a start in 2 minutes that runs the checks only, without agents
@@ -59,7 +61,7 @@ func runSchedule(ctx context.Context, args []string, env Env) int {
 	case "-h", "--help", "help":
 		fmt.Fprint(env.Out, scheduleUsage)
 		return 0
-	case "add", "remove", "until", "on", "off", "status", "test", "fire":
+	case "add", "remove", "until", "program", "on", "off", "status", "test", "fire":
 	default:
 		fmt.Fprintf(env.Err, "twokey schedule: unknown command %q.\n\n%s", sub, scheduleUsage)
 		return 2
@@ -102,7 +104,7 @@ func runSchedule(ctx context.Context, args []string, env Env) int {
 	switch sub {
 	case "fire":
 		return c.fire(ctx, *test)
-	case "add", "remove", "until":
+	case "add", "remove", "until", "program":
 		return c.change(ctx, sub, fs.Args())
 	}
 	if fs.NArg() > 0 {
@@ -138,24 +140,66 @@ func (c scheduleCmd) save(s schedule.Schedule) bool {
 	return true
 }
 
-// task is what the Task Scheduler task runs: this twokey.exe.
-func (c scheduleCmd) task() (schedule.Task, bool) {
-	exe, err := c.env.Exe, error(nil)
+// self is this twokey.exe.
+func (c scheduleCmd) self() (string, error) {
+	if c.env.Exe != "" {
+		return c.env.Exe, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(exe)
+}
+
+func (c scheduleCmd) version(exe string) (string, error) {
+	if c.env.ExeVersion != nil {
+		return c.env.ExeVersion(exe)
+	}
+	return version.OfFile(exe)
+}
+
+// program is the twokey.exe the starts run (D68): the schedule's, else
+// this one. It must be a tagged release build, so a night run never picks
+// up a development build, and rebuilding one never fails because a start
+// holds the file.
+func (c scheduleCmd) program(s schedule.Schedule) (exe, ver string, ok bool) {
+	exe = s.Program
 	if exe == "" {
-		if exe, err = os.Executable(); err == nil {
-			exe, err = filepath.EvalSymlinks(exe)
+		var err error
+		if exe, err = c.self(); err != nil {
+			ui.Line(c.env.Out, ui.Fail, "Can't find this twokey.exe: "+err.Error())
+			return "", "", false
 		}
 	}
-	if err != nil {
-		ui.Line(c.env.Out, ui.Fail, "Can't find this twokey.exe: "+err.Error())
-		return schedule.Task{}, false
+	ok = c.release(exe, &ver)
+	return exe, ver, ok
+}
+
+// release checks that exe is a release build of twokey, and says what to
+// do if it isn't.
+func (c scheduleCmd) release(exe string, ver *string) bool {
+	out := c.env.Out
+	v, err := c.version(exe)
+	switch {
+	case err != nil:
+		ui.Line(out, ui.Fail, ui.Sentence(err.Error())+".")
+	case strings.Contains(strings.ToLower(exe), "go-build"):
+		ui.Line(out, ui.Fail, exe+" is a temporary build (go run), which Task Scheduler can't start later.")
+	case !version.Release(v):
+		ui.Line(out, ui.Fail, fmt.Sprintf("%s is a development build (%s), and a schedule runs only a tagged release.", exe, v))
+	default:
+		*ver = v
+		return true
 	}
-	if strings.Contains(strings.ToLower(exe), "go-build") {
-		ui.Line(c.env.Out, ui.Fail, "This twokey is a temporary build (go run), which Task Scheduler can't start later.")
-		ui.Next(c.env.Out, "build twokey (go build -o bin/twokey.exe ./cmd/twokey, or go install), and run that one.")
-		return schedule.Task{}, false
-	}
-	return schedule.Task{Exe: exe, Repo: c.root, Config: c.cfgFile}, true
+	ui.Next(out, "twokey schedule program <a release build of twokey.exe>. The README's \"Scheduled rounds\" says how to build one.")
+	return false
+}
+
+// task is what the Task Scheduler task runs.
+func (c scheduleCmd) task(s schedule.Schedule) (schedule.Task, bool) {
+	exe, _, ok := c.program(s)
+	return schedule.Task{Exe: exe, Repo: c.root, Config: c.cfgFile}, ok
 }
 
 // sync makes the task match a schedule that is on. With no start times
@@ -175,7 +219,7 @@ func (c scheduleCmd) sync(ctx context.Context, s *schedule.Schedule) bool {
 		ui.Line(c.env.Out, ui.OK, "No start time is left, so the schedule is off.")
 		return true
 	}
-	t, ok := c.task()
+	t, ok := c.task(*s)
 	if !ok {
 		return false
 	}
@@ -192,6 +236,7 @@ func (c scheduleCmd) change(ctx context.Context, sub string, args []string) int 
 		return 1
 	}
 	out := c.env.Out
+	note := ""
 	switch sub {
 	case "add":
 		if len(args) == 0 {
@@ -231,6 +276,22 @@ func (c scheduleCmd) change(ctx context.Context, sub string, args []string) int 
 			ui.Next(out, "twokey schedule status lists them.")
 			return 1
 		}
+	case "program":
+		if len(args) != 1 {
+			fmt.Fprintln(c.env.Err, "Usage: twokey schedule program <twokey.exe>")
+			return 2
+		}
+		exe, err := filepath.Abs(args[0])
+		if err != nil {
+			ui.Line(out, ui.Fail, ui.Sentence(err.Error()))
+			return 1
+		}
+		var ver string
+		if !c.release(exe, &ver) {
+			return 1
+		}
+		s.Program = exe
+		note = fmt.Sprintf("The starts run %s (%s).", exe, ver)
 	case "until":
 		if len(args) != 1 {
 			fmt.Fprintln(c.env.Err, "Usage: twokey schedule until <YYYY-MM-DD> | none")
@@ -259,6 +320,9 @@ func (c scheduleCmd) change(ctx context.Context, sub string, args []string) int 
 		state = "on"
 	}
 	ui.Line(out, ui.OK, fmt.Sprintf("Schedule (%s): %s.", state, s.Describe()))
+	if note != "" {
+		ui.Detail(out, note)
+	}
 	if !s.On && len(s.Daily)+len(s.Once) > 0 {
 		ui.Next(out, "twokey schedule on")
 	}
@@ -286,13 +350,17 @@ func (c scheduleCmd) on(ctx context.Context) int {
 		ui.Next(out, "add one with twokey schedule add, or move the end date with twokey schedule until.")
 		return 1
 	}
-	s.On, s.Since = true, c.now
+	exe, ver, ok := c.program(s)
+	if !ok {
+		return 1
+	}
+	s.Program, s.On, s.Since = exe, true, c.now
 	if !c.sync(ctx, &s) || !c.save(s) {
 		return 1
 	}
 	next, _ := s.Next(c.now)
 	ui.Line(out, ui.OK, fmt.Sprintf("The schedule is on: %s. Next start: %s.", s.Describe(), next.Format("Mon 2 Jan 15:04")))
-	ui.Detail(out, "Each start runs twokey round --autopilot in a new window and makes decisions by itself.")
+	ui.Detail(out, fmt.Sprintf("Each start runs twokey round --autopilot with %s (%s), in a new window, and makes decisions by itself.", exe, ver))
 	if !c.cfg.Autopilot.Decide {
 		ui.Line(out, ui.Warn, "[autopilot] decide = false: a round pauses at the first decision, until you answer.")
 	}
@@ -327,7 +395,11 @@ func (c scheduleCmd) off(ctx context.Context) int {
 }
 
 func (c scheduleCmd) test(ctx context.Context) int {
-	t, ok := c.task()
+	s, ok := c.load()
+	if !ok {
+		return 1
+	}
+	t, ok := c.task(s)
 	if !ok {
 		return 1
 	}
@@ -348,7 +420,8 @@ func (c scheduleCmd) fire(ctx context.Context, test bool) int {
 		ui.Line(c.env.Out, ui.Fail, ui.Sentence(err.Error()))
 		return 1
 	}
-	return schedule.Fire(ctx, schedule.Slot{Engine: o, Console: c.env.Out, Tasks: c.tasks, Task: c.name, Test: test, Notify: o.Notify})
+	return schedule.Fire(ctx, schedule.Slot{Engine: o, Console: c.env.Out, Tasks: c.tasks, Task: c.name, Test: test, Notify: o.Notify,
+		Version: version.String()})
 }
 
 func (c scheduleCmd) status(ctx context.Context) int {
@@ -367,15 +440,13 @@ func (c scheduleCmd) status(ctx context.Context) int {
 	}
 	if goos == "windows" {
 		v.Info = c.tasks.Query(ctx, c.name)
-		if v.Info.Exe != "" {
-			if _, err := os.Stat(v.Info.Exe); err != nil {
-				v.ExeGone = true
-			}
-		}
-		if v.Exe = c.env.Exe; v.Exe == "" {
-			if t, err := os.Executable(); err == nil {
-				v.Exe, _ = filepath.EvalSymlinks(t)
-			}
+	}
+	if v.Program = s.Program; v.Program == "" {
+		v.Program = v.Info.Exe
+	}
+	if v.Program != "" {
+		if v.Version, err = c.version(v.Program); err != nil {
+			v.Unusable = err.Error()
 		}
 	}
 	if o, err := engineOptions(c.env, c.root, c.cfg, "", false, 0); err == nil {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/Sten-Qy-Li/twokey/internal/engine"
 	"github.com/Sten-Qy-Li/twokey/internal/state"
+	"github.com/Sten-Qy-Li/twokey/internal/ui"
+	"github.com/Sten-Qy-Li/twokey/internal/version"
 )
 
 // View is what the morning view shows ("twokey schedule status").
@@ -15,8 +17,9 @@ type View struct {
 	Schedule Schedule
 	Task     string // the task's name
 	Info     Info   // what Task Scheduler has
-	Exe      string // this twokey.exe
-	ExeGone  bool   // the task's program doesn't exist
+	Program  string // the twokey.exe the starts run
+	Version  string // its version
+	Unusable string // why Program can't run, such as "C:\x\twokey.exe doesn't exist"
 	History  []Record
 	Latest   *engine.RunSummary // nil without runs
 	Running  string             // "run X (process N)" while a twokey holds the lock
@@ -47,6 +50,16 @@ func Render(v View) string {
 			b.WriteString("Next start:  none (no start time is left before the end date)\n")
 		}
 	}
+	if v.Program != "" {
+		switch {
+		case v.Unusable != "":
+			fmt.Fprintf(&b, "Program:     %s\n[FAIL] %s, so every start fails.\n       Next: twokey schedule program <a release build of twokey.exe>\n", v.Program, ui.Sentence(v.Unusable))
+		case !version.Release(v.Version):
+			fmt.Fprintf(&b, "Program:     %s (%s)\n[FAIL] It's a development build, so every start refuses to run.\n       Next: rebuild it from a tag, or twokey schedule program <a release build of twokey.exe>\n", v.Program, v.Version)
+		default:
+			fmt.Fprintf(&b, "Program:     %s (%s)\n", v.Program, v.Version)
+		}
+	}
 	switch {
 	case !v.Info.Exists && s.On:
 		fmt.Fprintf(&b, "[WARN] The task %q isn't in Task Scheduler, so nothing starts.\n       Next: twokey schedule on\n", v.Task)
@@ -57,17 +70,15 @@ func Render(v View) string {
 		if !v.Info.Enabled {
 			on = "disabled"
 		}
-		fmt.Fprintf(&b, "Task:        %q in Task Scheduler, %s, runs %s\n", v.Task, on, v.Info.Exe)
+		fmt.Fprintf(&b, "Task:        %q in Task Scheduler, %s\n", v.Task, on)
 		switch {
 		case s.On && !v.Info.Enabled:
 			b.WriteString("[WARN] The schedule is on, but the task is disabled, so nothing starts.\n       Next: twokey schedule on\n")
 		case !s.On && v.Info.Enabled:
 			b.WriteString("[WARN] The schedule is off, but the task is enabled.\n       Next: twokey schedule off\n")
 		}
-		if v.ExeGone {
-			b.WriteString("[FAIL] The task's twokey.exe doesn't exist any more, so every start fails.\n       Next: twokey schedule on (with the twokey you want it to run)\n")
-		} else if v.Exe != "" && !strings.EqualFold(filepath.Clean(v.Info.Exe), filepath.Clean(v.Exe)) {
-			fmt.Fprintf(&b, "[WARN] The task runs another twokey.exe than this one (%s).\n       Next: twokey schedule on, to point it at this one\n", v.Exe)
+		if v.Program != "" && v.Info.Exe != "" && !strings.EqualFold(filepath.Clean(v.Info.Exe), filepath.Clean(v.Program)) {
+			fmt.Fprintf(&b, "[WARN] The task runs %s instead.\n       Next: twokey schedule on\n", v.Info.Exe)
 		}
 	}
 	if v.Running != "" {

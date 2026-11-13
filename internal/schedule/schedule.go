@@ -36,6 +36,9 @@ type Schedule struct {
 	// LastLooked is the last "twokey schedule status", for "since you last
 	// looked".
 	LastLooked time.Time `json:"last_looked,omitzero"`
+	// Program is the twokey.exe the starts run, a tagged release build
+	// (D68): set by "schedule program", or by the first "schedule on".
+	Program string `json:"program,omitempty"`
 }
 
 const (
