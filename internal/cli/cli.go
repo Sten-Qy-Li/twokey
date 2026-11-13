@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/Sten-Qy-Li/twokey/internal/doctor"
 	"github.com/Sten-Qy-Li/twokey/internal/initcmd"
@@ -29,6 +30,7 @@ Commands:
   resume    Continue a paused or stopped run
   decide    Answer a finding, or change an automatic decision
   stop      Stop a run that is going
+  schedule  Start rounds at set times (Windows Task Scheduler)
   render    Show a prompt without running it
   unlock    Remove a stale lock
   status    Show the current run
@@ -47,6 +49,9 @@ type Env struct {
 	Runner proc.Runner
 	// StagingRoot and ScratchRoot replace twokey's own folders (tests).
 	StagingRoot, ScratchRoot string
+	GOOS                     string           // "" = runtime.GOOS (tests)
+	Now                      func() time.Time // nil = time.Now (tests)
+	Exe                      string           // "" = this twokey.exe; the program a schedule's task runs (tests)
 }
 
 // Main runs twokey and returns the exit code.
@@ -97,6 +102,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runDecide(ctx, rest, env)
 	case "stop":
 		return runStop(ctx, rest, env)
+	case "schedule":
+		return runSchedule(ctx, rest, env)
 	default:
 		fmt.Fprintf(env.Err, "twokey: unknown command %q. Run \"twokey help\" to see the commands.\n", cmd)
 		return 2

@@ -69,6 +69,27 @@ func Status(o Options, runID string) (string, error) {
 	return b.String(), nil
 }
 
+// RunSummary is the latest run, for the morning view ("twokey schedule
+// status").
+type RunSummary struct {
+	State   *state.State
+	Dir     string   // the run folder
+	Waiting []string // findings autopilot skipped that wait for the owner (D61)
+}
+
+// Latest returns the latest run. It wraps ErrNoRuns if there is none.
+func Latest(o Options) (RunSummary, error) {
+	e := newEngine(o)
+	dir, err := FindRun(e.runRoot, "")
+	if err != nil {
+		return RunSummary{}, err
+	}
+	if e.st, err = state.Load(dir); err != nil {
+		return RunSummary{}, err
+	}
+	return RunSummary{State: e.st, Dir: dir, Waiting: e.waiting()}, nil
+}
+
 // Report rebuilds a run's report.md ("twokey report") and returns its path.
 // It doesn't add another log entry.
 func Report(ctx context.Context, o Options, runID string) (string, error) {

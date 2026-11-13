@@ -30,12 +30,13 @@ Early development. Stepper mode with real agents works; v0.2 adds unattended rou
 | `twokey resume` | Continues a paused or stopped run. |
 | `twokey decide <ID> <answer>` | Answers a finding that autopilot left for you, or changes a decision it made for you. |
 | `twokey stop [--now]` | Stops a run that is going, before its next agent step (or at once with `--now`). |
+| `twokey schedule ...` | Starts one unattended round at set times with Windows Task Scheduler: `add 02:00`, `until 2026-11-20`, `on`, `off`, `status` (what ran, and what waits for you), `test`. |
 | `twokey status` | Shows the current run on one screen. |
 | `twokey report` | Rebuilds a run's report. |
 | `twokey render <step>` | Prints a step's prompt without running it, for tuning the templates. |
 | `twokey unlock` | Removes a stale lock. |
 
-Coming next: scheduled rounds with Windows Task Scheduler, then notifications. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
+Coming next: notifications (Windows toasts and ntfy). See [the milestones](docs/SPEC.md#16-milestones-and-releases).
 
 ## Install
 
