@@ -102,6 +102,7 @@ func TestProblems(t *testing.T) {
 		{name: "timeout", extra: "[timeouts]\nfix = 0\n", want: "[timeouts] fix must be a number of minutes from 1 to 1440 (got 0)."},
 		{name: "wait hours", extra: "[limits]\nmax_wait_hours = 48\n", want: "[limits] max_wait_hours must be a whole number from 0 to 24 (got 48)."},
 		{name: "ntfy topic", extra: "[notify]\nntfy_topic = \"my topic\"\n", want: `[notify] ntfy_topic may use only letters, digits, - and _`},
+		{name: "ntfy server", extra: "[notify]\nntfy_server = \"ntfy.sh\"\n", want: `[notify] ntfy_server must be a web address such as "https://ntfy.sh" (got "ntfy.sh").`},
 		{name: "verify entry", file: strings.Replace(minimal, "commands = []", `commands = ["npm test", " "]`, 1), want: `[verify] commands: entry 2 must be one line of text (got " ").`},
 	}
 	for _, c := range cases {

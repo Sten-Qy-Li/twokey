@@ -616,7 +616,8 @@ func (d *doctor) checkNotify(cfg *config.Config) {
 	if cfg.Notify.NtfyTopic == "" {
 		d.ok("Phone push (ntfy): off")
 	} else {
-		d.warn("Phone push (ntfy) is not built yet. twokey ignores [notify] ntfy_topic for now.")
+		d.ok(fmt.Sprintf("Phone push (ntfy): on, to %s/%s. Messages name only the run, the event and the next step.",
+			strings.TrimRight(cfg.Notify.NtfyServer, "/"), cfg.Notify.NtfyTopic))
 	}
 }
 

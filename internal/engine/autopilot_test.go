@@ -266,6 +266,34 @@ func TestRequestStop(t *testing.T) {
 	}
 }
 
+// A pause and a finish each send one notification, with the run, the
+// event and where to look, but no findings text (SPEC section 10).
+func TestNotifications(t *testing.T) {
+	w := newWorld(t)
+	w.decisions = engine.WaitOwner
+	w.json(1, "codex-audit.json", audit(finding("R1-CX-01", "P2", "needs_decision")))
+	w.json(1, "claude-audit.json", audit())
+	w.json(1, "convergence.json", conv(merged("R1-M-01", "P2", "needs_decision", "confirmed", "R1-CX-01")))
+	var got []string
+	o := w.opts("", 0)
+	o.Notify = func(title, msg string) { got = append(got, title+" | "+msg) }
+	w.expect(engine.Start(t.Context(), o), engine.ExitPaused)
+	id := w.state().RunID
+	if want := "twokey: paused | Run " + id + " paused in round 1 (PAUSE_DECISION). pending.md in the run folder says what twokey needs."; strings.Join(got, "\n") != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	w = newWorld(t)
+	w.cleanRound(1)
+	got = nil
+	o = w.opts("", 0)
+	o.Notify = func(title, msg string) { got = append(got, title+" | "+msg) }
+	w.expect(engine.Start(t.Context(), o), engine.ExitDone)
+	if want := "twokey: converged | Run " + w.state().RunID + " converged in round 1. report.md has the details."; strings.Join(got, "\n") != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // The loop holds keep-awake while it runs, and lets go at the end.
 func TestKeepAwake(t *testing.T) {
 	w := newWorld(t)

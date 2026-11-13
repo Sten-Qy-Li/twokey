@@ -39,6 +39,9 @@ type Slot struct {
 	Tasks   TaskAPI
 	Task    string // the task's name
 	Test    bool   // "twokey schedule test": the checks only, no agents
+	// Notify sends the one notification of a start (D67); the round's own
+	// notifications are off, so the owner gets one per start. nil = none.
+	Notify func(title, message string)
 }
 
 // resumable are the pauses a later slot may pick up by itself: a usage
@@ -94,6 +97,9 @@ func Fire(ctx context.Context, sl Slot) int {
 			ui.Detail(out, l)
 		}
 		ui.Detail(out, "twokey schedule status shows it with the other starts.")
+		if sl.Notify != nil && outcome != NothingNew {
+			sl.Notify("twokey: scheduled start", notice(rec))
+		}
 		switch outcome {
 		case Paused:
 			return engine.ExitPaused
@@ -144,7 +150,7 @@ func Fire(ctx context.Context, sl Slot) int {
 			before[k] = v
 		}
 	}
-	o.Out, o.UI, o.Autopilot = out, engine.NewTextUI(strings.NewReader(""), out, true), true
+	o.Out, o.UI, o.Autopilot, o.Notify = out, engine.NewTextUI(strings.NewReader(""), out, true), true, nil
 	code := engine.Round(ctx, o)
 	sum, err := engine.Latest(o)
 	if err != nil {
@@ -183,7 +189,7 @@ func blocked(ctx context.Context, o engine.Options, runRoot string, out io.Write
 	sum, err := engine.Latest(o)
 	if err == nil && sum.State.Status == state.Paused && sum.State.Pause != nil && !slices.Contains(resumable, sum.State.Pause.Reason) {
 		msg, _, _ := strings.Cut(sum.State.Pause.Message, "\n")
-		return fmt.Sprintf("Run %s is paused (%s) and waits for you: %s", sum.State.RunID, sum.State.Pause.Reason, msg)
+		return fmt.Sprintf("Run %s is paused (%s) and waits for you. %s", sum.State.RunID, sum.State.Pause.Reason, msg)
 	}
 	if err != nil && !errors.Is(err, engine.ErrNoRuns) {
 		return "Can't read the latest run: " + ui.Sentence(err.Error())
@@ -238,6 +244,51 @@ func summarize(code int, sum engine.RunSummary, before map[string]string, output
 		return Stopped, lines
 	}
 	return Converged, lines
+}
+
+// notice is a start's notification: the outcome, the run and the round,
+// counts instead of findings text (an ntfy topic can be read by anyone who
+// knows it), and where to look.
+func notice(r Record) string {
+	first := ""
+	if len(r.Lines) > 0 {
+		first, _, _ = strings.Cut(r.Lines[0], ". ")
+		first = strings.TrimSuffix(first, ".") + "."
+	}
+	var auto, waiting int
+	for _, l := range r.Lines {
+		switch {
+		case strings.HasPrefix(l, "Automatic "):
+			auto++
+		case strings.HasPrefix(l, "Waiting for you: "):
+			waiting++
+		}
+	}
+	var b strings.Builder
+	switch r.Outcome {
+	case RoundDone, Converged, Paused, Stopped:
+		fmt.Fprintf(&b, "Run %s: %s", r.Run, first)
+		if r.Outcome == Paused {
+			b.Reset()
+			fmt.Fprintf(&b, "Run %s paused in round %d.", r.Run, r.Round)
+		}
+		if auto > 0 {
+			fmt.Fprintf(&b, " %d automatic decisions.", auto)
+		}
+		if waiting > 0 {
+			fmt.Fprintf(&b, " %d findings wait for you.", waiting)
+		}
+	case Skipped:
+		b.WriteString("Skipped: " + first)
+	case TestOK:
+		b.WriteString("The test start passed: a round could start now.")
+	case Ended:
+		b.WriteString("The schedule ended and is off now.")
+	default:
+		b.WriteString("The start failed.")
+	}
+	b.WriteString(" Next: twokey schedule status")
+	return strings.Replace(strings.Replace(b.String(), " 1 automatic decisions.", " 1 automatic decision.", 1), " 1 findings wait", " 1 finding waits", 1)
 }
 
 // fixLine says what a round fixed and pushed.

@@ -92,6 +92,7 @@ func (e *engine) runAgent(ctx context.Context, r *state.Round, s *state.Step, st
 			waits++
 			ui.Line(e.o.Out, ui.Busy, fmt.Sprintf("%s hit a usage limit: %s", s.Name, res.Limit.Message))
 			ui.Detail(e.o.Out, fmt.Sprintf("Waiting until %s, then it runs again. Ctrl+C stops the run; twokey resume continues it.", until.Local().Format("15:04")))
+			e.notify("twokey: waiting for a usage limit", fmt.Sprintf("Run %s, round %d: %s hit a usage limit. twokey waits until %s.", e.st.RunID, r.N, s.Name, until.Local().Format("15:04")))
 			if !e.o.Sleep(ctx, until.Sub(e.o.Now())) {
 				return outcome{problem: "stopped"}
 			}

@@ -86,6 +86,9 @@ type Options struct {
 	// returns the function that lets it sleep again (nil = don't ask).
 	KeepAwake func() (release func())
 	StopPoll  time.Duration // how often to look for "twokey stop"; 0 = every 2 seconds
+	// Notify tells the owner about a pause, a finish or a wait for a usage
+	// limit (SPEC section 10). nil = no notifications.
+	Notify    func(title, message string)
 	Docker    Cleaner
 	Heartbeat time.Duration                                   // how often to print running steps; 0 = every minute
 	Sleep     func(ctx context.Context, d time.Duration) bool // waits for a usage limit; false = stopped
@@ -544,7 +547,23 @@ func (e *engine) pauseWith(p *state.Pause, next string) bool {
 	ui.Line(e.o.Out, ui.Pause, reason+": "+msg)
 	ui.Next(e.o.Out, next)
 	ui.Detail(e.o.Out, "Then run: twokey resume")
+	e.notify("twokey: paused", fmt.Sprintf("Run %s paused in round %d (%s). pending.md in the run folder says what twokey needs.", e.st.RunID, e.roundN(), reason))
 	return false
+}
+
+// notify sends a notification, if the owner wants them. Messages name only
+// the run, the event and the next step (SPEC section 10).
+func (e *engine) notify(title, message string) {
+	if e.o.Notify != nil {
+		e.o.Notify(title, message)
+	}
+}
+
+func (e *engine) roundN() int {
+	if r := e.st.Current(); r != nil {
+		return r.N
+	}
+	return 0
 }
 
 // nextRound starts the next round on the pushed commit.
@@ -580,6 +599,14 @@ func (e *engine) finish(ctx context.Context, status string) int {
 		ui.Line(e.o.Out, ui.Warn, "Can't add the report to the log: "+err.Error())
 	}
 	_ = os.RemoveAll(e.staging)
+	switch status {
+	case state.Converged:
+		e.notify("twokey: converged", fmt.Sprintf("Run %s converged in round %d. report.md has the details.", e.st.RunID, e.roundN()))
+	case state.RoundDone:
+		e.notify("twokey: round done", fmt.Sprintf("Run %s: round %d is fixed and pushed, not audited yet. Next: twokey round.", e.st.RunID, e.roundN()))
+	default:
+		e.notify("twokey: last round done", fmt.Sprintf("Run %s stopped after round %d with findings left. report.md has the details.", e.st.RunID, e.roundN()))
+	}
 	switch status {
 	case state.Converged:
 		_ = os.Remove(filepath.Join(e.runDir, "pending.md"))

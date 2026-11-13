@@ -348,7 +348,7 @@ func (c scheduleCmd) fire(ctx context.Context, test bool) int {
 		ui.Line(c.env.Out, ui.Fail, ui.Sentence(err.Error()))
 		return 1
 	}
-	return schedule.Fire(ctx, schedule.Slot{Engine: o, Console: c.env.Out, Tasks: c.tasks, Task: c.name, Test: test})
+	return schedule.Fire(ctx, schedule.Slot{Engine: o, Console: c.env.Out, Tasks: c.tasks, Task: c.name, Test: test, Notify: o.Notify})
 }
 
 func (c scheduleCmd) status(ctx context.Context) int {

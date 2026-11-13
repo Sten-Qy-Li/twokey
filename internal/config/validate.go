@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -137,6 +138,9 @@ func (c *Config) Validate() Problems {
 	}
 
 	// [notify]
+	if u, err := url.Parse(c.Notify.NtfyServer); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		add("[notify] ntfy_server must be a web address such as \"https://ntfy.sh\" (got %q).", c.Notify.NtfyServer)
+	}
 	if t := c.Notify.NtfyTopic; t != "" && !ntfyTopic.MatchString(t) {
 		add("[notify] ntfy_topic may use only letters, digits, - and _ (up to 64), or be \"\" for off (got %q).", t)
 	}

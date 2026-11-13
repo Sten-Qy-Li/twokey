@@ -36,7 +36,7 @@ Early development. Stepper mode with real agents works; v0.2 adds unattended rou
 | `twokey render <step>` | Prints a step's prompt without running it, for tuning the templates. |
 | `twokey unlock` | Removes a stale lock. |
 
-Coming next: notifications (Windows toasts and ntfy). See [the milestones](docs/SPEC.md#16-milestones-and-releases).
+twokey notifies you on pauses and finishes with a Windows toast, and on your phone through [ntfy](https://ntfy.sh) if you set `[notify] ntfy_topic`. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
 
 ## Install
 

@@ -18,6 +18,7 @@ import (
 	"github.com/Sten-Qy-Li/twokey/internal/gitx"
 	"github.com/Sten-Qy-Li/twokey/internal/initcmd"
 	"github.com/Sten-Qy-Li/twokey/internal/lock"
+	"github.com/Sten-Qy-Li/twokey/internal/notify"
 	"github.com/Sten-Qy-Li/twokey/internal/paths"
 	"github.com/Sten-Qy-Li/twokey/internal/render"
 	"github.com/Sten-Qy-Li/twokey/internal/runner"
@@ -81,12 +82,18 @@ func engineOptions(env Env, root string, cfg *config.Config, fake string, autopi
 		MaxRounds: maxRounds, Autopilot: autopilot, Editor: editor(),
 		Decisions: decisions, KeepAwake: awake.Hold,
 	}
+	goos := env.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	n := notify.New(cfg.Notify, env.Runner, env.Out, goos)
+	o.Notify = func(title, message string) { n.Send(context.Background(), title, message) }
 	if fake != "" {
 		if !filepath.IsAbs(fake) {
 			fake = filepath.Join(env.Dir, fake)
 		}
 		// Fake agents start no containers, and tests never call Docker.
-		o.Runner, o.Docker, o.FakeAgents, o.KeepAwake = runner.Fake{Dir: fake, Git: env.Runner}, nil, true, nil
+		o.Runner, o.Docker, o.FakeAgents, o.KeepAwake, o.Notify = runner.Fake{Dir: fake, Git: env.Runner}, nil, true, nil, nil
 	}
 	return o, nil
 }

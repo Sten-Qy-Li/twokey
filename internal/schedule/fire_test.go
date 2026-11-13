@@ -51,6 +51,7 @@ type project struct {
 	scenario string
 	tasks    *fakeTasks
 	out      bytes.Buffer
+	notes    []string // notifications: title | message
 	now      time.Time
 }
 
@@ -115,7 +116,9 @@ func (p *project) fire(test bool) int {
 		FakeAgents: true, Autopilot: true, Decisions: engine.Recommended,
 		Now: func() time.Time { return p.now },
 	}
-	return schedule.Fire(p.t.Context(), schedule.Slot{Engine: o, Console: &p.out, Tasks: p.tasks, Task: "twokey work 123456", Test: test})
+	o.Notify = func(title, msg string) { p.notes = append(p.notes, "engine: "+title) } // Fire turns these off
+	return schedule.Fire(p.t.Context(), schedule.Slot{Engine: o, Console: &p.out, Tasks: p.tasks, Task: "twokey work 123456", Test: test,
+		Notify: func(title, msg string) { p.notes = append(p.notes, title+" | "+msg) }})
 }
 
 func (p *project) last() schedule.Record {
@@ -148,6 +151,9 @@ func TestFireRunsOneRound(t *testing.T) {
 	if strings.Join(r.Lines, "\n") != strings.Join(want, "\n") {
 		t.Errorf("lines:\n%s", strings.Join(r.Lines, "\n"))
 	}
+	if want := "twokey: scheduled start | Run " + r.Run + ": Round 1: fixed R1-M-01, and pushed 1 commit (" + head[:7] + "). Next: twokey schedule status"; strings.Join(p.notes, "\n") != want {
+		t.Errorf("notifications:\n%s\nwant one:\n%s", strings.Join(p.notes, "\n"), want)
+	}
 	log, err := os.ReadFile(r.Log)
 	if err != nil || !strings.Contains(string(log), "scheduled round") || !strings.Contains(string(log), "Pushed 1 commit to origin/feature.") {
 		t.Errorf("slot log (%v):\n%s", err, log)
@@ -162,6 +168,9 @@ func TestFireSkips(t *testing.T) {
 		p.fire(false)
 		if r := p.last(); r.Outcome != schedule.Skipped || !strings.Contains(r.Lines[0], "The working tree isn't clean (1 changed or new files), so you may be working in it.") || p.runs() != 0 {
 			t.Errorf("record %+v, runs %d", r, p.runs())
+		}
+		if len(p.notes) != 1 || !strings.HasPrefix(p.notes[0], "twokey: scheduled start | Skipped: The working tree isn't clean") {
+			t.Errorf("notifications: %q", p.notes)
 		}
 	})
 	t.Run("another run", func(t *testing.T) {
@@ -213,6 +222,9 @@ func TestFireSkips(t *testing.T) {
 		p.fire(true)
 		if r := p.last(); r.Outcome != schedule.TestOK || !r.Test || p.runs() != 0 || strings.Join(p.tasks.calls, ",") != "delete twokey work 123456 (test)" {
 			t.Errorf("record %+v, runs %d, calls %v", r, p.runs(), p.tasks.calls)
+		}
+		if strings.Join(p.notes, "\n") != "twokey: scheduled start | The test start passed: a round could start now. Next: twokey schedule status" {
+			t.Errorf("notifications: %q", p.notes)
 		}
 	})
 }

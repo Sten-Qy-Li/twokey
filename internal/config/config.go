@@ -110,8 +110,9 @@ type Limits struct {
 
 // Notify is the [notify] section.
 type Notify struct {
-	Toast     bool   `toml:"toast"`
-	NtfyTopic string `toml:"ntfy_topic"`
+	Toast      bool   `toml:"toast"`
+	NtfyServer string `toml:"ntfy_server"`
+	NtfyTopic  string `toml:"ntfy_topic"`
 }
 
 // Default returns the values used for keys the file leaves out. The keys
@@ -154,7 +155,7 @@ func Default() *Config {
 			MaxWaitHours:       5,
 			UsageLimitPatterns: []string{"hit your", "usage limit", "rate limit", "try again"},
 		},
-		Notify: Notify{Toast: true},
+		Notify: Notify{Toast: true, NtfyServer: "https://ntfy.sh"},
 	}
 }
 
