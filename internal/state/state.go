@@ -24,6 +24,9 @@ const (
 	Converged = "converged"
 	MaxRounds = "max_rounds"
 	Stopped   = "stopped" // the owner quit; resume continues
+	// RoundDone: one round ("twokey round") pushed its fix, which the next
+	// round's audits check (DECISIONS.md D58).
+	RoundDone = "round_done"
 )
 
 // Step statuses.
@@ -107,8 +110,9 @@ type Round struct {
 	Verified       bool    `json:"verified"`
 	// VerifyRetries counts the fix session's extra tries after a failed
 	// check (at most one, SPEC section 8).
-	VerifyRetries int  `json:"verify_retries"`
-	Pushed        bool `json:"pushed"`
+	VerifyRetries int    `json:"verify_retries"`
+	Pushed        bool   `json:"pushed"`
+	PushedSHA     string `json:"pushed_sha,omitempty"` // HEAD as pushed
 }
 
 // Pause says why the run waits for the owner.

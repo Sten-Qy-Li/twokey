@@ -27,6 +27,8 @@ func TestCommands(t *testing.T) {
 		{[]string{"nope"}, 2, `unknown command "nope"`},
 		{[]string{"run"}, 1, "This folder is not inside a git repository."},
 		{[]string{"resume"}, 1, "This folder is not inside a git repository."},
+		{[]string{"round"}, 1, "This folder is not inside a git repository."},
+		{[]string{"round", "-h"}, 0, "Usage: twokey round [options]"},
 		{[]string{"status"}, 1, "This folder is not inside a git repository."},
 		{[]string{"report"}, 1, "This folder is not inside a git repository."},
 		{[]string{"render"}, 2, "Usage: twokey render <audit|convergence|dispute|fix>"},

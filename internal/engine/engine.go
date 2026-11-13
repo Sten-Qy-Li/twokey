@@ -37,6 +37,7 @@ const (
 	ExitError     = 1 // preflight failed, or something broke
 	ExitPaused    = 3 // the run waits for the owner
 	ExitMaxRounds = 4 // stopped after the last round with findings left
+	ExitRoundDone = 5 // one round (twokey round) pushed its fix, not audited yet (D58)
 )
 
 // Pause reasons (SPEC section 10).
@@ -74,6 +75,7 @@ type Options struct {
 	ScratchRoot string
 	FakeAgents  bool   // the runner is fake: don't look for the CLIs
 	MaxRounds   int    // 0 = [loop] max_rounds
+	Single      bool   // twokey round: stop after this round's push (D58)
 	Autopilot   bool   // the mode recorded in state.json
 	Editor      string // command that opens a prompt for editing
 	Docker      Cleaner
@@ -103,6 +105,7 @@ type engine struct {
 	stateHash  string
 	beat       *heartbeat
 	dockerWarn sync.Once // the parallel audits share one warning
+	pushed     bool      // this process pushed a fix: one round (Single) is done
 }
 
 func newEngine(o Options) *engine {
@@ -145,7 +148,7 @@ func Start(ctx context.Context, o Options) int {
 	if o.Autopilot {
 		mode = "autopilot"
 	}
-	fmt.Fprintf(o.Out, "twokey %s: new run in %s mode\n\n", version.String(), mode)
+	fmt.Fprintf(o.Out, "twokey %s: new run in %s mode%s\n\n", version.String(), mode, oneRound(o))
 	if !e.preflight(ctx) {
 		return ExitError
 	}
@@ -194,6 +197,55 @@ func Start(ctx context.Context, o Options) int {
 	return e.loop(ctx)
 }
 
+func oneRound(o Options) string {
+	if o.Single {
+		return ", one round"
+	}
+	return ""
+}
+
+// Round runs one round ("twokey round", DECISIONS.md D58): blind audits,
+// convergence, the fix, the checks and the push, then it stops. It
+// continues the latest run, so the next round audits the last fix, and
+// starts a new run only when the latest one converged. If the branch hasn't
+// moved since that run converged, there is nothing new to audit.
+func Round(ctx context.Context, o Options) int {
+	o.Single = true
+	e := newEngine(o)
+	dir, err := FindRun(e.runRoot, "")
+	if errors.Is(err, ErrNoRuns) {
+		return Start(ctx, o)
+	}
+	var st *state.State
+	if err == nil {
+		st, err = state.Load(dir)
+	}
+	if err != nil {
+		ui.Line(o.Out, ui.Fail, ui.Sentence(err.Error()))
+		return ExitError
+	}
+	if st.Status != state.Converged {
+		return Resume(ctx, o, st.RunID, 0)
+	}
+	if last := st.Current(); last != nil && e.atCommit(ctx, st.Remote, st.Branch, last.Commit) {
+		fmt.Fprintf(o.Out, "twokey %s: one round\n\n", version.String())
+		ui.Line(o.Out, ui.OK, fmt.Sprintf("Run %s converged on %s, and %s hasn't moved since. There is nothing new to audit.", st.RunID, short(last.Commit), st.Branch))
+		return ExitDone
+	}
+	return Start(ctx, o)
+}
+
+// atCommit reports whether HEAD and <remote>/<branch>, after git fetch, are
+// both sha.
+func (e *engine) atCommit(ctx context.Context, remote, branch, sha string) bool {
+	if e.repo.Fetch(ctx, remote) != nil {
+		return false
+	}
+	head, _ := e.repo.RevParse(ctx, "HEAD")
+	rb, _ := e.repo.RevParse(ctx, "refs/remotes/"+remote+"/"+branch)
+	return head == sha && rb == sha
+}
+
 // ErrNoRuns means the repository has no twokey runs yet.
 var ErrNoRuns = errors.New("there are no runs")
 
@@ -237,7 +289,7 @@ func Resume(ctx context.Context, o Options, runID string, moreRounds int) int {
 		return ExitError
 	}
 	e.setRun(e.st.RunID)
-	fmt.Fprintf(o.Out, "twokey %s: resuming run %s\n\n", version.String(), e.st.RunID)
+	fmt.Fprintf(o.Out, "twokey %s: resuming run %s%s\n\n", version.String(), e.st.RunID, oneRound(o))
 
 	lk, err := lock.Acquire(e.runRoot, lock.Info{PID: os.Getpid(), RunID: e.st.RunID, Started: e.o.Now().UTC()})
 	if err != nil {
@@ -255,7 +307,7 @@ func Resume(ctx context.Context, o Options, runID string, moreRounds int) int {
 		ui.Line(o.Out, ui.OK, "This run already converged. Start a new one with twokey run.")
 		return ExitDone
 	case state.MaxRounds:
-		if moreRounds == 0 {
+		if moreRounds == 0 && !o.Single {
 			ui.Line(o.Out, ui.OK, "This run stopped after its last round.")
 			ui.Next(o.Out, "twokey resume --more-rounds 1")
 			return ExitMaxRounds
@@ -265,6 +317,11 @@ func Resume(ctx context.Context, o Options, runID string, moreRounds int) int {
 	if cur, err := e.repo.CurrentBranch(ctx); err != nil || cur != e.st.Branch {
 		ui.Line(o.Out, ui.Fail, fmt.Sprintf("The repository must be on %s to resume.", e.st.Branch))
 		ui.Next(o.Out, "git switch "+e.st.Branch)
+		return ExitError
+	}
+	// Between rounds (after "twokey round"), the next round starts on HEAD,
+	// which must be what the remote has, as for a new run.
+	if r := e.st.Current(); r != nil && r.Pushed && !e.preflight(ctx) {
 		return ExitError
 	}
 	if !e.resolve(ctx) {
@@ -371,6 +428,8 @@ func (e *engine) loop(ctx context.Context) int {
 					goOn = e.verify(ctx, r)
 				case !r.Pushed:
 					goOn = e.push(ctx, r)
+				case e.o.Single && e.pushed:
+					return e.finish(ctx, state.RoundDone)
 				default:
 					goOn = e.nextRound(ctx)
 				}
@@ -393,6 +452,8 @@ func (e *engine) exitCode() int {
 		return ExitPaused
 	case e.st.Status == state.MaxRounds:
 		return ExitMaxRounds
+	case e.st.Status == state.RoundDone:
+		return ExitRoundDone
 	default:
 		return ExitDone
 	}
@@ -461,7 +522,12 @@ func (e *engine) nextRound(ctx context.Context) bool {
 	if err != nil {
 		return e.pause(PauseInvariant, "Can't read HEAD: "+err.Error(), "Check the repository, then run twokey resume.", "", nil)
 	}
-	e.update(func() { e.st.NewRound(head, head) })
+	e.update(func() {
+		r := e.st.NewRound(head, head)
+		if e.o.Single && r.N > e.st.MaxRounds {
+			e.st.MaxRounds = r.N // the prompts say "round N of at most N": this command runs no more
+		}
+	})
 	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Round %d starts on %s.", e.st.Current().N, short(head)))
 	return true
 }
@@ -483,12 +549,16 @@ func (e *engine) finish(ctx context.Context, status string) int {
 		ui.Line(e.o.Out, ui.Warn, "Can't add the report to the log: "+err.Error())
 	}
 	_ = os.RemoveAll(e.staging)
-	if status == state.Converged {
+	switch status {
+	case state.Converged:
 		ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Converged in round %d: both agents cleared %s.", e.st.Current().N, short(e.st.Current().Commit)))
 		if advice != "" {
 			ui.Next(e.o.Out, advice)
 		}
-	} else {
+	case state.RoundDone:
+		ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Round %d is done. Its fix is pushed, but not audited yet: the next round's audits check it.", e.st.Current().N))
+		ui.Next(e.o.Out, "twokey round")
+	default:
 		ui.Line(e.o.Out, ui.Warn, fmt.Sprintf("Stopped after round %d, the last one, with findings left.", e.st.Current().N))
 		ui.Next(e.o.Out, "read report.md, then twokey resume --more-rounds 1 if you want another round")
 	}

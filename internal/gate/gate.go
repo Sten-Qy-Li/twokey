@@ -32,8 +32,11 @@ const (
 // Input is everything the gate looks at.
 type Input struct {
 	Round, MaxRounds int
-	FixP3            bool
-	InvariantFailed  bool
+	// SingleRound means "twokey round": the round always gets its fix, so
+	// max_rounds doesn't stop it (DECISIONS.md D58).
+	SingleRound     bool
+	FixP3           bool
+	InvariantFailed bool
 
 	Codex, Claude schema.AuditResult
 	Convergence   schema.ConvergenceResult
@@ -128,7 +131,7 @@ func Decide(in Input) Result {
 		res.Action, res.IDs = PauseRecurring, recurring
 	case len(confirmed) == 0:
 		res.Action = StopConverged
-	case in.Round >= in.MaxRounds:
+	case in.Round >= in.MaxRounds && !in.SingleRound:
 		res.Action, res.IDs = StopMaxRounds, confirmed
 	default:
 		res.Action, res.IDs = Fix, confirmed

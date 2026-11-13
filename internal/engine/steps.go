@@ -733,7 +733,8 @@ func (e *engine) push(ctx context.Context, r *state.Round) bool {
 	}
 	_ = os.WriteFile(filepath.Join(e.roundDir(r), "push.log"),
 		[]byte(fmt.Sprintf("Pushed %s to %s/%s:\n%s\n", short(head), remote, branch, strings.Join(lines, "\n"))), 0o644)
-	e.update(func() { r.Pushed = true })
+	e.update(func() { r.Pushed, r.PushedSHA = true, head })
+	e.pushed = true
 	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Pushed %s to %s/%s.", plural(len(commits), "commit"), remote, branch))
 	return true
 }

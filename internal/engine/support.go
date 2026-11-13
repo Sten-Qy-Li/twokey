@@ -182,7 +182,7 @@ func (e *engine) twokeyLabel() string { return "twokey " + version.String() }
 // decide runs the gate on the round's published answers.
 func (e *engine) decide(r *state.Round) gate.Result {
 	in := gate.Input{
-		Round: r.N, MaxRounds: e.st.MaxRounds, FixP3: e.cfg.Loop.FixP3,
+		Round: r.N, MaxRounds: e.st.MaxRounds, SingleRound: e.o.Single, FixP3: e.cfg.Loop.FixP3,
 		Codex:       loadJSON[schema.AuditResult](r.Step(state.CodexAudit).Result),
 		Claude:      loadJSON[schema.AuditResult](r.Step(state.ClaudeAudit).Result),
 		Convergence: loadJSON[schema.ConvergenceResult](r.Step(state.Convergence).Result),
@@ -274,6 +274,9 @@ func (e *engine) report() string {
 		fmt.Fprintf(&b, "**Outcome:** converged in round %d. Both audits cleared commit `%s`.\n\n", cur.N, short(cur.Commit))
 	case state.MaxRounds:
 		fmt.Fprintf(&b, "**Outcome:** stopped after round %d, the last one, with confirmed findings left: %s.\n\n", cur.N, strings.Join(cur.Gate.IDs, ", "))
+	case state.RoundDone:
+		fmt.Fprintf(&b, "**Outcome:** round %d is done. Its fix is pushed (`%s`), but **it hasn't been audited yet**. "+
+			"The next round's audits check it: run `twokey round`.\n\n", cur.N, short(cur.PushedSHA))
 	default:
 		fmt.Fprintf(&b, "**Outcome:** %s.\n\n", e.st.Status)
 	}

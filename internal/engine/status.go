@@ -63,6 +63,8 @@ func Status(o Options, runID string) (string, error) {
 		}
 	case state.MaxRounds:
 		b.WriteString("Next:       read report.md, then twokey resume --more-rounds 1 if you want another round\n")
+	case state.RoundDone:
+		b.WriteString("Next:       twokey round (its audits check the fix that isn't audited yet)\n")
 	}
 	return b.String(), nil
 }

@@ -25,6 +25,7 @@ Commands:
   init      Create the config file and check .gitignore
   doctor    Check that everything twokey needs is in place
   run       Start a run
+  round     Run one round (audits to push), then stop
   resume    Continue a paused or stopped run
   render    Show a prompt without running it
   unlock    Remove a stale lock
@@ -78,6 +79,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runDoctor(ctx, rest, env)
 	case "run":
 		return runRun(ctx, rest, env)
+	case "round":
+		return runRound(ctx, rest, env)
 	case "resume":
 		return runResume(ctx, rest, env)
 	case "render":

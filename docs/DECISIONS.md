@@ -205,3 +205,16 @@ Stepper mode used to wait twice between steps: "Press Enter to go on" after a re
 
 ## D57. twokey never moves the branch to the upstream (2026-11-12)
 Replaces D39's fast-forward, at the owner's request before the first real run: twokey shouldn't move the owner's branch to `main` by itself. `[project] upstream` stays, but only for comparing. At the start of each round, and in `doctor`, twokey says how the branch stands to `<remote>/<upstream>`. Behind or diverged is a `[WARN]` with the commit counts and what the owner can do (`git merge --ff-only` and `git push`; when diverged, first a merge request with a merge commit). The round goes on and audits the branch as it is, so `PAUSE_DIVERGED` is gone. The audits still get the comparison (`${upstream_status}`, D42), which now also covers a branch that is behind or has diverged. The report's advice after a converged run now ends with the commands to run, not "the next run fast-forwards". Not moving the branch also makes stepper and autopilot behave the same here.
+
+## D58. One round at a time: `twokey round` (2026-11-13)
+Requested by the owner after the first real round: one round uses many tokens, so they want to run exactly one (audits, convergence, dispute, fix, checks, push) and then stop. `run --max-rounds 1` isn't that: it stops before the fix.
+- It is a new command, not a `run` option, because `run` always starts a new run and `resume` always continues one, and one round needs both: it continues the latest run, so the next round audits the last fix and the history and IDs carry on, and starts a new run only when the latest one converged.
+- After a convergence, if HEAD and the remote branch are still the commit that converged, nothing runs: auditing it again would spend tokens for nothing.
+- A round that stopped part way is finished from where it stopped. So is the last round of a run stopped at `max_rounds`: its audits are done, so the round gets its fix.
+- `max_rounds` doesn't apply: the gate takes `SingleRound` and skips row 7. When a round goes past the run's limit, the limit becomes the round number, so "round N of at most M" in the prompts stays true.
+- Between rounds, the owner or a teammate may have changed things, so the next round runs the full preflight before it starts on HEAD.
+- New run status `round_done`, exit code 5, and the report says in bold that the fix hasn't been audited yet. The report goes into the log after each round, as after a finished run.
+- Works in stepper mode and with `--autopilot`.
+
+## D59. M3 is redefined (2026-11-13)
+Approved by the owner. M3 becomes: one round at a time (D58); autopilot as the unattended mode, with automatic decisions, `twokey decide` and `twokey stop`; agents that can't push; keep-awake; rounds scheduled with Windows Task Scheduler, with a morning view in `twokey schedule status`; then toasts and ntfy. Each part is its own release candidate (v0.2.0-rc.4 onwards). If time gets short, the schedule comes before the notifications. v0.2.0 needs one scheduled night on the rehearsal copy, then one on the owner's project, reviewed by the owner in the morning.

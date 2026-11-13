@@ -111,6 +111,27 @@ func runRun(ctx context.Context, args []string, env Env) int {
 	return engine.Start(ctx, o)
 }
 
+func runRound(ctx context.Context, args []string, env Env) int {
+	fs := newFlags("round", "Runs one round: blind audits, convergence, the fix, the checks and the push, then stops.\n"+
+		"It continues the latest run, so its audits check the last fix. It starts a new run only if the latest one converged.", env)
+	configPath := fs.String("config", "", "read the config from this file instead of local-only_twokey.toml")
+	autopilot := fs.Bool("autopilot", false, "don't wait for Enter between steps")
+	fake := fs.String("fake-agents", "", "play scripted answers from this scenario folder (for tests)")
+	if code := parse(fs, args); code >= 0 {
+		return code
+	}
+	root, cfg, ok := project(ctx, env, *configPath)
+	if !ok {
+		return 1
+	}
+	o, err := engineOptions(env, root, cfg, *fake, *autopilot || cfg.Loop.Mode == "autopilot", 0)
+	if err != nil {
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
+		return 1
+	}
+	return engine.Round(ctx, o)
+}
+
 func runResume(ctx context.Context, args []string, env Env) int {
 	fs := newFlags("resume", "Continues the latest run, or the one given with --run.", env)
 	configPath := fs.String("config", "", "read the config from this file instead of local-only_twokey.toml")

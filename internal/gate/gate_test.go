@@ -92,6 +92,8 @@ func TestDecide(t *testing.T) {
 		// Row 7
 		{"last round: stop, no fix", Input{Codex: audit(cx1), Round: 4, MaxRounds: 4,
 			Convergence: conv(m("R4-M-01", "P1", "repo_fix", "confirmed", "R1-CX-01"))}, StopMaxRounds, []string{"R4-M-01"}},
+		{"one round (twokey round): fix after the last round too", Input{Codex: audit(cx1), Round: 5, MaxRounds: 4, SingleRound: true,
+			Convergence: conv(m("R5-M-01", "P1", "repo_fix", "confirmed", "R1-CX-01"))}, Fix, []string{"R5-M-01"}},
 		// Row 8
 		{"fix confirmed blocking findings", Input{Codex: audit(cx1), Claude: audit(cc1), Round: 1, MaxRounds: 4,
 			Convergence: conv(
