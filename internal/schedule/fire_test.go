@@ -232,7 +232,7 @@ func TestRender(t *testing.T) {
 			{Planned: at(2, 0), Started: at(2, 1), Outcome: schedule.RoundDone, Round: 2,
 				Lines: []string{"Round 2: fixed R2-M-01, and pushed 2 commits (abc1234).", "Automatic decision: R2-M-02 → A (twokey decide R2-M-02 <answer> changes it)."}},
 		},
-		Latest: &engine.RunSummary{State: &state.State{RunID: "run1", Status: state.RoundDone}, Dir: `C:\work\runs\run1`,
+		Latest: &engine.RunSummary{State: &state.State{RunID: "run1", Status: state.RoundDone}, Dir: filepath.Join("work", "runs", "run1"),
 			Waiting: []string{"- R2-M-03 (round 2): it needs your decision. To answer: `twokey decide R2-M-03 <answer>`"}},
 		Now: now,
 	}
@@ -245,7 +245,7 @@ func TestRender(t *testing.T) {
 		"  Sat 14 Nov 02:01  round done\n                    Round 2: fixed R2-M-01, and pushed 2 commits (abc1234).",
 		"  Sat 14 Nov 05:00  didn't start: the PC was off, asleep, on battery or logged out",
 		"Waiting for you:\n  R2-M-03 (round 2): it needs your decision.",
-		`Report:      C:\work\runs\run1\report.md`,
+		"Report:      " + filepath.Join("work", "runs", "run1", "report.md"),
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the view lacks %q:\n%s", want, got)

@@ -111,8 +111,8 @@ func TestSaveLoad(t *testing.T) {
 }
 
 func TestTaskName(t *testing.T) {
-	a, b := TaskName(`C:\work\project`), TaskName(`C:\clone\project`)
-	if !strings.HasPrefix(a, "twokey project ") || a == b || a != TaskName(`C:\WORK\project`) {
+	a, b := TaskName(filepath.Join("work", "project")), TaskName(filepath.Join("clone", "project"))
+	if !strings.HasPrefix(a, "twokey project ") || a == b || a != TaskName(filepath.Join("WORK", "project")) {
 		t.Errorf("%q %q", a, b)
 	}
 }

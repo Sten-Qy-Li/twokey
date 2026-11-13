@@ -74,13 +74,17 @@ func TestScheduleCommands(t *testing.T) {
 	r.WriteFile(t, "local-only_twokey.toml", "[project]\nbranch = \"feature\"\n\n[checkpoint]\nlabel = \"Milestone 1\"\n"+
 		"requirements_file = \"local-only_req.md\"\n\n[verify]\ncommands = []\n")
 	f := &fakeScheduler{tasks: map[string]string{}}
+	exe := filepath.Join(t.TempDir(), "twokey.exe") // the program the task runs must exist
+	if err := os.WriteFile(exe, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 11, 13, 15, 0, 0, 0, time.Local)
 	goos := "windows"
 	sched := func(args ...string) (string, int) {
 		t.Helper()
 		var out bytes.Buffer
 		code := Run(t.Context(), append([]string{"schedule"}, args...), Env{Dir: r.Dir, Out: &out, Err: &out, Runner: f,
-			GOOS: goos, Now: func() time.Time { return now }, Exe: `C:\tools\twokey.exe`})
+			GOOS: goos, Now: func() time.Time { return now }, Exe: exe})
 		return out.String(), code
 	}
 	expect := func(args []string, code int, want ...string) {
@@ -95,7 +99,10 @@ func TestScheduleCommands(t *testing.T) {
 			}
 		}
 	}
-	name := schedule.TaskName(r.Dir)
+	// twokey takes the root from git, which gives the long form of a path
+	// that the temp folder may spell short (RUNNER~1 on CI).
+	top := filepath.FromSlash(testutil.Git(t, r.Dir, "rev-parse", "--show-toplevel"))
+	name := schedule.TaskName(top)
 
 	expect([]string{"on"}, 1, "The schedule has no start times yet.")
 	expect([]string{"add", "02:00"}, 0, "[OK]    Schedule (off): every day at 02:00.", "Next: twokey schedule on")
@@ -108,9 +115,9 @@ func TestScheduleCommands(t *testing.T) {
 
 	expect([]string{"on"}, 0, "The schedule is on: every day at 02:00; until Fri 20 Nov. Next start: Sat 14 Nov 02:00.",
 		"Next: twokey schedule test")
-	cfg, _ := filepath.Abs(filepath.Join(r.Dir, "local-only_twokey.toml"))
+	cfg := filepath.Join(top, "local-only_twokey.toml")
 	x := f.tasks[name]
-	for _, want := range []string{`<Command>C:\tools\twokey.exe</Command>`, `<Arguments>schedule fire --config "` + cfg + `"</Arguments>`,
+	for _, want := range []string{"<Command>" + exe + "</Command>", `<Arguments>schedule fire --config "` + cfg + `"</Arguments>`,
 		"<StartBoundary>2026-11-13T02:00:00</StartBoundary>", "<Enabled>true</Enabled>\r\n    <Hidden>"} {
 		if !strings.Contains(x, want) {
 			t.Errorf("task lacks %q:\n%s", want, x)
@@ -121,14 +128,14 @@ func TestScheduleCommands(t *testing.T) {
 		t.Error("adding a time to a schedule that is on must update the task")
 	}
 	expect([]string{"status"}, 0, "Schedule:    on: every day at 02:00 and 13:30; until Fri 20 Nov", "Next start:  Sat 14 Nov 02:00",
-		`in Task Scheduler, enabled, runs C:\tools\twokey.exe`, "Starts so far:\n  Nothing.")
+		"in Task Scheduler, enabled, runs "+exe, "Starts so far:\n  Nothing.")
 
 	expect([]string{"off"}, 0, "The schedule is off. No new round starts.")
 	if !strings.Contains(f.tasks[name], "<Enabled>false</Enabled>\r\n    <Hidden>") {
 		t.Error("off must disable the task")
 	}
 	out, _ := sched("status")
-	if !strings.Contains(out, "Schedule:    off:") || !strings.Contains(out, "disabled") || strings.Contains(out, "[WARN]") {
+	if !strings.Contains(out, "Schedule:    off:") || !strings.Contains(out, "disabled") || strings.Contains(out, "[WARN]") || strings.Contains(out, "[FAIL]") {
 		t.Errorf("status:\n%s", out)
 	}
 
