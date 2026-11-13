@@ -170,7 +170,7 @@ func (x *Real) claude(ctx context.Context, req Request) Result {
 		ScratchDir: req.ScratchDir, ReadDirs: x.Cfg.Project.ExtraReadDirs}
 	stdout, stderr := req.OutBase+".stdout.json", req.OutBase+".stderr.log"
 	tr := x.Launch(ctx, proc.TreeCmd{Dir: req.RepoDir, Name: x.claudePath(), Args: ClaudeArgs(c, p),
-		Stdin: req.Prompt, Stdout: stdout, Stderr: stderr})
+		Stdin: req.Prompt, Stdout: stdout, Stderr: stderr, Env: req.Env})
 	if tr.Killed {
 		res.TimedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
 		res.Problem = "Claude was stopped: " + ctx.Err().Error()

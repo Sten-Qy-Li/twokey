@@ -25,15 +25,17 @@ Early development. Stepper mode with real agents works; v0.2 adds unattended rou
 |---|---|
 | `twokey init [--templates]` | Creates `local-only_twokey.toml` in the repository and checks that git ignores it. `--templates` copies the prompt templates for editing. |
 | `twokey doctor [--smoke]` | Checks git, both agent CLIs and their options, the config, the repository, Docker and notifications. `--smoke` makes small real calls to both agents to test the sandbox, resumes and folder access. |
-| `twokey run` | Runs the loop with Codex and Claude Code, in stepper mode or with `--autopilot`. `--fake-agents <folder>` plays scripted agents instead. |
+| `twokey run` | Runs the loop with Codex and Claude Code, in stepper mode or with `--autopilot` (unattended: it takes the recommended option for decisions and records every choice it makes). `--fake-agents <folder>` plays scripted agents instead. |
 | `twokey round` | Runs one round (audits, fix, checks, push), then stops. The next `twokey round` continues the same run, so its audits check the fix. |
 | `twokey resume` | Continues a paused or stopped run. |
+| `twokey decide <ID> <answer>` | Answers a finding that autopilot left for you, or changes a decision it made for you. |
+| `twokey stop [--now]` | Stops a run that is going, before its next agent step (or at once with `--now`). |
 | `twokey status` | Shows the current run on one screen. |
 | `twokey report` | Rebuilds a run's report. |
 | `twokey render <step>` | Prints a step's prompt without running it, for tuning the templates. |
 | `twokey unlock` | Removes a stale lock. |
 
-Coming next: unattended rounds with automatic decisions, scheduled rounds, notifications and keep-awake. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
+Coming next: scheduled rounds with Windows Task Scheduler, then notifications. See [the milestones](docs/SPEC.md#16-milestones-and-releases).
 
 ## Install
 
@@ -65,9 +67,9 @@ Make sure git ignores the config file and the run folder. `twokey init` tells yo
 
 ## Safety
 
-- Agents never push. twokey pushes only the configured branch, never with force, and only after its checks pass.
+- Agents can't push: in their environment git sends every push to a remote helper that doesn't exist. twokey refuses to run while a `pushurl` or `pushInsteadOf` setting would get past that. It pushes only the configured branch itself, never with force, and only after its checks pass.
 - If anyone else pushed to the branch during a round, twokey pauses. It never merges, rebases or fast-forwards it. With `upstream` set, it warns when the branch is behind that branch or has diverged from it, and leaves bringing those commits in to you.
-- Protected branches are checked on the remote after every step. If one moved while an agent was running, twokey pauses until you confirm it was expected, for example a teammate's merge.
+- Protected branches are checked on the remote after every step. Since agents can't push, a move is someone else's, for example a teammate's merge: twokey notes it in the report and goes on.
 - Agents get their own scratch folders, Docker name prefixes and port ranges. twokey removes each step's Docker resources afterwards.
 - Screen control and your real browser are off for the agents by default.
 

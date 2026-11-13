@@ -26,6 +26,8 @@ type Request struct {
 	// OutBase is where the CLI's raw output goes, outside the repository:
 	// OutBase + ".stdout.json", ".events.jsonl", ".stderr.log" and so on.
 	OutBase string
+	// Env is added to the agent's environment: the push block (D62).
+	Env []string
 }
 
 // Result is what the step produced.

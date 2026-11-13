@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/Sten-Qy-Li/twokey/internal/gitx"
 	"github.com/Sten-Qy-Li/twokey/internal/invariant"
 	"github.com/Sten-Qy-Li/twokey/internal/runner"
 	"github.com/Sten-Qy-Li/twokey/internal/state"
@@ -128,13 +129,20 @@ func (e *engine) pushHead(ctx context.Context, r *state.Round, step string) bool
 
 // snapshotBefore takes the snapshot before an agent step. No agent was
 // running since the last check, so protected branches that moved since
-// then become the new baseline (DECISIONS.md D40).
+// then become the new baseline (DECISIONS.md D40). A git setting that would
+// get a push past the agents' block stops the run first (D62).
 func (e *engine) snapshotBefore(ctx context.Context) (invariant.Snapshot, bool) {
 	snap, ok := e.snapshot(ctx)
-	if ok {
-		e.acceptProtected(snap.Remote)
+	if !ok {
+		return snap, false
 	}
-	return snap, ok
+	if snap.PushConfig != "" {
+		first, _, _ := strings.Cut(snap.PushConfig, "\n")
+		return snap, e.pause(PauseInvariant, "These git settings would let agents push past twokey's block:"+indent(snap.PushConfig),
+			"Remove them ("+gitx.UnsetHint(first)+"), then run twokey resume.", "", nil)
+	}
+	e.acceptProtected(snap.Remote)
+	return snap, true
 }
 
 // acceptProtected takes protected-branch SHAs that twokey read while no
@@ -184,24 +192,34 @@ func (e *engine) movedProtected(before invariant.Snapshot, after *invariant.Snap
 	return moved
 }
 
-// stepViolated pauses after an agent step that changed what it must not
-// change. A protected branch that moved during the step may be a
-// teammate's merge or an agent's push, and twokey can't tell which, so the
-// owner confirms it on resume (DECISIONS.md D40).
-func (e *engine) stepViolated(ctx context.Context, what string, problems []string, before, moved map[string]string) bool {
+// acceptMoved takes protected branches that moved during an agent step as
+// the new baseline, with a note for the report. Agents can't push (D62),
+// so someone else moved them, for example a teammate's merge.
+func (e *engine) acceptMoved(what string, before, moved map[string]string) {
 	if len(moved) == 0 {
-		return e.invariantFailed(what, problems)
+		return
 	}
-	msg := fmt.Sprintf("A protected branch moved on %s during %s:\n%s\ntwokey can't tell a teammate's merge from an agent's push, because the agents use your git login.",
-		e.st.Remote, lowerFirst(what), e.describeMoves(ctx, before, moved))
-	p := &state.Pause{Reason: PauseProtected, Message: msg, Step: what, Protected: moved}
-	next := "Check that this change was expected, for example a teammate's merge. Then run twokey resume and confirm it. If an agent pushed it, undo that on the remote first."
-	if len(problems) > 0 {
-		p.Reason = PauseInvariant
-		p.Message = fmt.Sprintf("%s changed things it must not change:\n- %s\n\n%s", what, strings.Join(problems, "\n- "), msg)
-		next = "Look at the changes and undo what the agent shouldn't have done. Then run twokey resume; it asks you to confirm the protected branch too."
+	var notes []string
+	for _, b := range e.cfg.Project.ProtectedBranches {
+		if sha, ok := moved[b]; ok {
+			notes = append(notes, fmt.Sprintf("%s moved on %s during %s (%s -> %s). Agents can't push, so it was someone else, for example a teammate's merge.",
+				b, e.st.Remote, lowerFirst(what), short(before[b]), short(sha)))
+		}
 	}
-	return e.pauseWith(p, next)
+	e.update(func() {
+		if e.st.ProtectedSHAs == nil {
+			e.st.ProtectedSHAs = map[string]string{}
+		}
+		for b, sha := range moved {
+			e.st.ProtectedSHAs[b] = sha
+		}
+		for _, n := range notes {
+			e.st.Notes = append(e.st.Notes, fmt.Sprintf("Round %d: %s", e.st.Current().N, n))
+		}
+	})
+	for _, n := range notes {
+		ui.Line(e.o.Out, ui.OK, n+" twokey takes it as the new baseline.")
+	}
 }
 
 // describeMoves lists moved protected branches with their new commits.
@@ -242,36 +260,6 @@ func (e *engine) describeMoves(ctx context.Context, before, moved map[string]str
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-// confirmProtected asks the owner whether the protected branches that moved
-// during the paused step moved on purpose. Yes makes them the new
-// baseline; anything else keeps the run paused.
-func (e *engine) confirmProtected(ctx context.Context) bool {
-	p := e.st.Pause
-	text := fmt.Sprintf("A protected branch moved on %s during %s:\n%s", e.st.Remote, lowerFirst(p.Step),
-		e.describeMoves(ctx, e.st.ProtectedSHAs, p.Protected))
-	if !e.o.UI.Confirm(text) {
-		ui.Line(e.o.Out, ui.Pause, "Still paused: the protected branch change is not confirmed.")
-		ui.Next(e.o.Out, "run twokey resume again and type y once you have checked the change.")
-		return false
-	}
-	var notes []string
-	for _, b := range e.cfg.Project.ProtectedBranches {
-		if sha, ok := p.Protected[b]; ok {
-			notes = append(notes, fmt.Sprintf("Round %d: you confirmed that %s moved on %s during %s (%s -> %s).",
-				e.st.Current().N, b, e.st.Remote, lowerFirst(p.Step), short(e.st.ProtectedSHAs[b]), short(sha)))
-		}
-	}
-	e.update(func() {
-		for b, sha := range p.Protected {
-			e.st.ProtectedSHAs[b] = sha
-		}
-		e.st.Notes = append(e.st.Notes, notes...)
-		p.Protected = nil
-	})
-	ui.Line(e.o.Out, ui.OK, "Confirmed. twokey takes the protected branches as they are now.")
-	return true
 }
 
 // lowerFirst turns "Round 2's fix step" into "round 2's fix step".

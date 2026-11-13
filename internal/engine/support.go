@@ -116,10 +116,17 @@ func (e *engine) fixVars(r *state.Round, ids []string) map[string]string {
 			if m.FixHint != "" {
 				fmt.Fprintf(&b, "  Fix hint: %s\n", m.FixHint)
 			}
-			if d := e.st.Decisions[id]; d != "" {
+			_, auto := e.st.Automatic[id]
+			switch d := e.st.Decisions[id]; {
+			case d != "" && auto:
+				fmt.Fprintf(&b, "  Decision, taken automatically (the recommended option): %s\n", d)
+			case d != "":
 				fmt.Fprintf(&b, "  The owner's decision: %s\n", d)
 			}
-			if e.st.Rulings[id] == gate.RuleFix {
+			switch {
+			case e.st.Rulings[id] == gate.RuleFix && auto && m.Status == "disputed":
+				fmt.Fprintf(&b, "  Codex maintained it after the dispute, so it is fixed (an automatic ruling).\n")
+			case e.st.Rulings[id] == gate.RuleFix:
 				fmt.Fprintf(&b, "  The owner ruled: fix it.\n")
 			}
 		}
@@ -187,6 +194,9 @@ func (e *engine) decide(r *state.Round) gate.Result {
 		Claude:      loadJSON[schema.AuditResult](r.Step(state.ClaudeAudit).Result),
 		Convergence: loadJSON[schema.ConvergenceResult](r.Step(state.Convergence).Result),
 		Rulings:     e.st.Rulings, Decisions: e.st.Decisions, Lineage: e.lineage(),
+	}
+	if e.o.Decisions == Recommended {
+		in.Skipped = skippedSet(r)
 	}
 	if r.IsDone(state.Dispute) {
 		d := loadJSON[schema.DisputeResult](r.Step(state.Dispute).Result)
@@ -347,7 +357,13 @@ func (e *engine) report() string {
 	}
 	section("For the owner and the team (external evidence)", external)
 	section("P3 items not fixed", p3)
+	if waiting := e.waiting(); len(waiting) > 0 {
+		section("Waiting for you (skipped by autopilot)", waiting)
+	}
 	fmt.Fprintf(&b, "\n## Decisions and rulings\n\n%s\n", e.decisionsText())
+	if len(e.st.Automatic) > 0 {
+		b.WriteString("\nAutopilot took the ones marked \"automatic\". To change one: `twokey decide <ID> <answer>` (an option number, your own text, fix or drop).\n")
+	}
 	section("Disputes and how they ended", disputes)
 	if len(denials) > 0 {
 		denials = append(denials, "", "Claude's denials can become allow rules in the project's .claude/settings.json. Codex's refused commands come from its sandbox ([codex] sandbox).")

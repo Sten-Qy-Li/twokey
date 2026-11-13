@@ -21,6 +21,9 @@ mode = "stepper"                            # or "autopilot"
 max_rounds = 4
 fix_p3 = false
 
+[autopilot]                                 # unattended rounds (--autopilot, schedules)
+decide = true                               # take the recommended option, fix what Codex maintains; false = pause for you
+
 [verify]
 commands = ["npm run lint", "npm run format:check", "npm run typecheck", "npm test", "npm run build"]
 

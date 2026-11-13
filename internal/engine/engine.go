@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Sten-Qy-Li/twokey/internal/config"
@@ -52,7 +53,7 @@ const (
 	PauseAgentFailed = "PAUSE_AGENT_FAILED"
 	PausePushFailed  = "PAUSE_PUSH_FAILED"
 	PauseInterrupted = "PAUSE_INTERRUPTED"
-	PauseProtected   = "PAUSE_PROTECTED_MOVED" // a protected branch moved during an agent step (D40)
+	PauseSkipped     = string(gate.PauseSkipped) // only findings that autopilot skipped are left (D61)
 	PauseUsageLimit  = "PAUSE_USAGE_LIMIT"
 	PauseTimeout     = "PAUSE_TIMEOUT"
 )
@@ -78,9 +79,16 @@ type Options struct {
 	Single      bool   // twokey round: stop after this round's push (D58)
 	Autopilot   bool   // the mode recorded in state.json
 	Editor      string // command that opens a prompt for editing
-	Docker      Cleaner
-	Heartbeat   time.Duration                                   // how often to print running steps; 0 = every minute
-	Sleep       func(ctx context.Context, d time.Duration) bool // waits for a usage limit; false = stopped
+	// Decisions says how decisions and rulings are made: AskOwner (the
+	// default), Recommended or WaitOwner (D60, D61).
+	Decisions string
+	// KeepAwake asks the system not to sleep while the loop runs and
+	// returns the function that lets it sleep again (nil = don't ask).
+	KeepAwake func() (release func())
+	StopPoll  time.Duration // how often to look for "twokey stop"; 0 = every 2 seconds
+	Docker    Cleaner
+	Heartbeat time.Duration                                   // how often to print running steps; 0 = every minute
+	Sleep     func(ctx context.Context, d time.Duration) bool // waits for a usage limit; false = stopped
 	// Sandbox tries commands in Codex's sandbox at the start of a run
 	// (D51). nil = the real check, on Windows, with real agents only.
 	Sandbox func(ctx context.Context) []runner.SandboxResult
@@ -104,8 +112,10 @@ type engine struct {
 	// during every step.
 	stateHash  string
 	beat       *heartbeat
-	dockerWarn sync.Once // the parallel audits share one warning
-	pushed     bool      // this process pushed a fix: one round (Single) is done
+	dockerWarn sync.Once   // the parallel audits share one warning
+	pushed     bool        // this process pushed a fix: one round (Single) is done
+	stopAfter  atomic.Bool // "twokey stop": stop before the next agent step (D63)
+	stopNow    atomic.Bool // "twokey stop --now" cancelled the run's context
 }
 
 func newEngine(o Options) *engine {
@@ -161,6 +171,7 @@ func Start(ctx context.Context, o Options) int {
 		return ExitError
 	}
 	defer e.release(lk)
+	e.clearStop()
 
 	for _, d := range []string{e.runDir, e.staging} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -297,6 +308,7 @@ func Resume(ctx context.Context, o Options, runID string, moreRounds int) int {
 		return ExitError
 	}
 	defer e.release(lk)
+	e.clearStop()
 
 	if moreRounds > 0 {
 		e.st.MaxRounds += moreRounds
@@ -356,8 +368,10 @@ func (e *engine) resolve(ctx context.Context) bool {
 	}
 
 	if e.st.Pause != nil {
-		if len(e.st.Pause.Protected) > 0 && !e.confirmProtected(ctx) {
-			return false
+		if len(e.st.Pause.Protected) > 0 {
+			// A pause from before D62, which asked the owner to confirm.
+			e.acceptMoved(e.st.Pause.Step, e.st.ProtectedSHAs, e.st.Pause.Protected)
+			e.update(func() { e.st.Pause.Protected = nil })
 		}
 		switch e.st.Pause.Reason {
 		case PauseAgentFailed, PauseUsageLimit, PauseTimeout:
@@ -393,11 +407,17 @@ func (e *engine) resolve(ctx context.Context) bool {
 
 // loop runs steps until the run stops, pauses or the owner quits.
 func (e *engine) loop(ctx context.Context) int {
+	if e.o.KeepAwake != nil {
+		defer e.o.KeepAwake()()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer e.watchStop(cancel)()
 	stop := e.beat.run(e.o.Out, e.o.Heartbeat, e.o.Now)
 	defer stop()
 	for !e.broken {
 		if ctx.Err() != nil {
-			return e.stop("Stopped (Ctrl+C).")
+			return e.stop(e.interrupted())
 		}
 		r := e.st.Current()
 		var goOn bool
@@ -415,7 +435,10 @@ func (e *engine) loop(ctx context.Context) int {
 			case gate.RunDispute:
 				goOn = e.dispute(ctx, r, g.IDs)
 			case gate.PauseAdjudicate, gate.PauseDecision, gate.PauseRecurring:
-				goOn = e.ask(r, g)
+				goOn = e.answer(r, g)
+			case gate.PauseSkipped:
+				goOn = e.pause(PauseSkipped, fmt.Sprintf("Round %d has nothing it can fix: every finding left needs your answer.\n%s", r.N, strings.Join(e.waiting(), "\n")),
+					"Answer each with twokey decide <ID> <answer>, or run twokey resume without --autopilot, which asks you.", "", g.IDs)
 			case gate.StopConverged:
 				return e.finish(ctx, state.Converged)
 			case gate.StopMaxRounds:
@@ -484,9 +507,17 @@ func (e *engine) stop(msg string) int {
 	return ExitDone
 }
 
-// quit is a step's way to stop the loop when the owner pressed q.
+// quit is a step's way to stop the loop when the owner pressed q, or when
+// "twokey stop" asked for it.
 func (e *engine) quit() bool {
-	e.stop("Stopped by you.")
+	switch {
+	case e.stopNow.Load():
+		e.stop("Stopped by twokey stop --now.")
+	case e.stopAfter.Load():
+		e.stop("Stopped by twokey stop, before the next agent step.")
+	default:
+		e.stop("Stopped by you.")
+	}
 	return false
 }
 
@@ -551,12 +582,14 @@ func (e *engine) finish(ctx context.Context, status string) int {
 	_ = os.RemoveAll(e.staging)
 	switch status {
 	case state.Converged:
+		_ = os.Remove(filepath.Join(e.runDir, "pending.md"))
 		ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Converged in round %d: both agents cleared %s.", e.st.Current().N, short(e.st.Current().Commit)))
 		if advice != "" {
 			ui.Next(e.o.Out, advice)
 		}
 	case state.RoundDone:
 		ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Round %d is done. Its fix is pushed, but not audited yet: the next round's audits check it.", e.st.Current().N))
+		e.writePending()
 		ui.Next(e.o.Out, "twokey round")
 	default:
 		ui.Line(e.o.Out, ui.Warn, fmt.Sprintf("Stopped after round %d, the last one, with findings left.", e.st.Current().N))

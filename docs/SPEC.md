@@ -25,9 +25,9 @@ The name comes from the two-person rule: the run only ends when both keys turn, 
 | D1 | **Blind, parallel audits.** Codex and Claude audit the same commit at the same time. Neither sees the other's current-round work until the convergence step. |
 | D2 | **twokey is the only writer of the log file.** Agents never edit it. Their log entries come back inside their JSON answers. twokey inserts them one at a time, holding a lock and using an atomic replace (section 7). This rules out two agents writing to the file at nearly the same moment. |
 | D3 | **Stop rule.** Stop when, for the same commit, no confirmed P1 or P2 finding of kind `repo_fix` or `needs_decision` remains (section 4). The run is capped at 4 audit rounds by default. |
-| D4 | **Autopilot pushes fixes automatically** to the project's working branch, with no Enter press. twokey does the push itself after its checks pass (section 8). Agents never push. |
+| D4 | **Autopilot pushes fixes automatically** to the project's working branch, with no Enter press. twokey does the push itself after its checks pass (section 8). Agents never push, and their git can't (D62). |
 | D5 | **Roles are fixed in v0.x.** Codex: blind audit, dispute re-check. Claude: blind audit, convergence, fix. Keep a small runner interface, so another agent could be added later. |
-| D6 | **Two modes.** `stepper` (v0.1): shows each step's result and waits for Enter before the next step. `autopilot` (v0.2): runs unattended and pauses only for the reasons in section 10. In either mode, `twokey round` runs one round and stops after its push (DECISIONS.md D58). |
+| D6 | **Two modes.** `stepper` (v0.1): shows each step's result and waits for Enter before the next step. `autopilot` (v0.2): runs unattended. It never waits at a prompt: it answers decisions and rulings itself (configurable, D61), and stops only for the safety reasons in section 10. In either mode, `twokey round` runs one round and stops after its push (DECISIONS.md D58). |
 | D7 | **Go, one binary** (`go 1.27.0`, toolchain pinned in `go.mod`, `CGO_ENABLED=0`). Runtime dependencies: `golang.org/x/sys` and one TOML parser that rejects unknown keys (`github.com/BurntSushi/toml`), both pinned; nothing else without the owner's OK. CI runs `govulncheck`. Windows-first. Avoid Windows-only assumptions where it's cheap, but macOS/Linux are untested in v0.x. (Was Python; see DECISIONS.md D1.) |
 | D8 | **The audits share the main checkout, read-only.** They don't use git worktrees. In the owner's projects, the requirement files (`local-only_*`), `node_modules` and `.env` are git-ignored, so a worktree wouldn't contain them. Isolation comes from separate scratch folders, separate container prefixes and port ranges, and twokey's checks afterwards. |
 | D9 | **Each step is a fresh agent session.** Convergence doesn't continue the Claude audit session, and fix doesn't continue the convergence session. Sessions are resumed only to correct an invalid answer or a failed check (section 9). |
@@ -86,6 +86,7 @@ Inputs: the round number, `max_rounds`, both blind audit results, the convergenc
   - (b) only Claude's blind audit raised it and convergence (also Claude) disputed it, which counts as Claude withdrawing its own finding; or
   - (c) the owner ruled "drop".
 - *Confirmed blocking list* = the blocking findings in the convergence result with `status = confirmed`, plus disputed ones the owner ruled "fix", minus any the owner dropped.
+- *Skipped* (autopilot only, D61): findings autopilot left for the owner this round, because they need an answer it can't give (a decision without a recommended option, a finding that keeps coming back). They aren't fixed, and they keep the round from converging.
 
 **Order of checks (the first match wins)**
 
@@ -94,11 +95,12 @@ Inputs: the round number, `max_rounds`, both blind audit results, the convergenc
 | 1 | An invariant failed in this round | `PAUSE_INVARIANT` |
 | 2 | Convergence disputed a blocking finding that Codex raised, and there's no dispute result yet | `RUN_DISPUTE` |
 | 3 | The dispute step "maintained" any finding and the owner hasn't ruled yet | `PAUSE_ADJUDICATE` (show both sides) |
-| 4 | A confirmed `needs_decision` blocking finding has no decision from the owner | `PAUSE_DECISION` |
-| 5 | A confirmed blocking finding has recurred for the second time (`recurs_of` lineage ≥ 2) | `PAUSE_RECURRING` |
+| 4 | A confirmed `needs_decision` blocking finding that isn't skipped has no decision from the owner | `PAUSE_DECISION` (autopilot answers it, D61) |
+| 5 | A confirmed blocking finding that isn't skipped has recurred for the second time (`recurs_of` lineage ≥ 2) | `PAUSE_RECURRING` (autopilot skips it, D61) |
 | 6 | The confirmed blocking list is empty | `STOP_CONVERGED` |
+| 6a | Every finding on the confirmed blocking list is skipped | `PAUSE_SKIPPED`: nothing can be fixed until the owner answers (D61) |
 | 7 | `round >= max_rounds`, except in `twokey round` (D58) | `STOP_MAX_ROUNDS` (no fix after the last audit round; `resume --more-rounds N` continues) |
-| 8 | Otherwise | `FIX(list)`: the confirmed blocking list, plus confirmed P3 `repo_fix` items if `fix_p3 = true` |
+| 8 | Otherwise | `FIX(list)`: the confirmed blocking list without the skipped findings, plus confirmed P3 `repo_fix` items if `fix_p3 = true` |
 
 Notes:
 - P1/P2 `external_evidence` findings never block. They go into the final report as a to-do list for the owner and the team.
@@ -199,13 +201,17 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 **After every agent step** (any kind, including after a timeout, a kill or a crash found on resume):
 - Remove the Docker resources with that step's prefix (section 9, "Scratch, containers and ports"). This runs before the other checks.
 - `git ls-remote` for the branch and the protected branches must match the snapshot, so an agent that pushed by itself is caught at once (`PAUSE_INVARIANT`; D20). If the working branch moved on the remote to a commit that isn't in local history, someone else pushed: twokey warns and leaves it to the push step (`PAUSE_REMOTE_MOVED`; D30).
-- A protected branch that moved during the step may be a teammate's merge or an agent's push, and twokey can't tell which, because the agents use the owner's git login (D40). If that is the only problem, pause with `PAUSE_PROTECTED_MOVED`: show the branch, the old and new SHA, and the new commits (subject and author, up to 20), or say that the history was rewritten. Together with other problems, the pause is `PAUSE_INVARIANT` and lists all of them. Either way, `resume` asks the owner to confirm the change (only `y` counts) and then takes the new SHA as the baseline.
+- A protected branch that moved during the step is someone else's change, for example a teammate's merge, because agents can't push (D62, which replaces D40's pause). twokey notes it, adds it to the report, takes the new SHA as the baseline and goes on. If the step also broke a rule (for example it changed git's push settings), the move is listed with the other problems under `PAUSE_INVARIANT`, with the new commits (subject and author, up to 20), or a note that the history was rewritten.
+- git's push settings (any `remote.<name>.pushurl` or `url.<base>.pushInsteadOf`) are unchanged (D62).
 - `state.json` must still be what twokey last wrote (D33).
 
 **Protected branches outside agent steps** (D40). Before each agent step and after each push, twokey reads the protected branches again. A change since the last check happened while no agent was running (between steps or rounds, during the checks, a push or a pause), so it can't be an agent's push. twokey prints a note, adds it to the report, and takes the new SHA as the baseline.
 
+**Agents can't push** (D62). Every agent process gets `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` with `url.twokey-agents-may-not-push::.pushInsteadOf = ""` (after any entries the owner's environment already passes that way). Every push URL starts with the empty string, so git sends every push, by remote name or by URL, to the remote helper `twokey-agents-may-not-push`, which doesn't exist: the push fails at once, without a network call. Fetch and `ls-remote` are unchanged. A remote's own `pushurl` isn't rewritten by `pushInsteadOf`, and a longer `pushInsteadOf` wins, so twokey refuses to run agents while either is set (preflight, before each agent step, `doctor`), and one that appears during a step is a violation. twokey's own git commands, including its push, don't get the block. `doctor --smoke` checks that each agent's commands see it. The block doesn't stop an agent that deliberately overrides git's config on its own command line or reaches the remote with another tool; the `ls-remote` checks still catch a push to the working branch.
+
 **Preflight (before round 1)**
 - The repo is on `branch`; `git status --porcelain` is empty.
+- No git setting gets a push past the agents' block: no `remote.<name>.pushurl` and no `url.<base>.pushInsteadOf` in any config file (D62).
 - After `git fetch`, local `HEAD` equals `<remote>/<branch>`, and `<remote>/<upstream>` exists when `upstream` is set.
 - The requirements file and log marker exist; `codex` and `claude` are found.
 - No other twokey lock exists.
@@ -241,7 +247,8 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - Start each agent in its own Windows **job object** that kills its processes when the job closes. Killing the job ends the agent and every process it started, and the children die even if twokey itself crashes. twokey starts the agent suspended and lets it run only once it is in the job, so not even its first child can escape. When the agent exits, anything it left running is killed too. On other systems, use a process group. A job object doesn't stop Docker containers, because the Docker daemon runs them; see "Scratch, containers and ports".
 - Print a heartbeat line every 60 s while steps run, e.g. `[..] round 2: codex-audit 14 min, claude-audit 11 min`.
 - **Which model ran** (D44): Claude reports it as the keys of `modelUsage`; twokey takes the one with the highest cost. Codex's `--json` events never name the model, so a Codex log heading uses `[codex] model` when it is set, the model Codex reroutes to when it says so, and otherwise `[codex] label`. The report flags a heading that differs from the configured label.
-- While a run is active, ask Windows not to sleep (`SetThreadExecutionState` through `golang.org/x/sys/windows`), and release that at the end.
+- While a run is active, ask Windows not to sleep (`SetThreadExecutionState` with `ES_SYSTEM_REQUIRED`, from one goroutine locked to its thread, D64), and release that at the end. This doesn't keep the display on, and it can't stop a sleep the owner asks for, such as closing a laptop's lid.
+- Each agent's environment carries the push block (section 8, D62).
 
 **Screen and browser control** are off by default for both agents (`desktop_tools = false`): no computer use, and no control of the owner's real browser with their logins. Agents may still run headless test browsers, such as Playwright with a throwaway profile in their scratch folder. `desktop_tools = true` turns screen and browser control back on for that agent. The exact arguments are checked with `doctor --smoke` (D10, D43):
 - Codex: `-c plugins.<id>.enabled=false` for the bundled plugins `browser@openai-bundled`, `computer-use@openai-bundled` and `unified-computer-use@openai-bundled`, plus `-c mcp_servers.<name>.enabled=false` for the MCP servers `node_repl` and `cua_repl` when `codex mcp list --json` shows them enabled. Codex splits `-c` keys on dots and keeps quotes, so the plugin IDs are written unquoted. An override for an MCP server that isn't configured makes Codex fail ("invalid transport"), which is why twokey asks first, once per run.
@@ -300,14 +307,14 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - `PAUSE_INVARIANT`, `PAUSE_VERIFY_FAILED`, `PAUSE_NO_PROGRESS`, `PAUSE_REMOTE_MOVED`
 - `PAUSE_AGENT_FAILED` (after one retry)
 - `PAUSE_PUSH_FAILED` (`git fetch` or `git push` failed), `PAUSE_INTERRUPTED` (a fix step was interrupted and left changes) (D32)
-- `PAUSE_PROTECTED_MOVED` (a protected branch moved during an agent step; D40)
+- `PAUSE_SKIPPED` (autopilot: every finding left needs the owner's answer; D61)
 - `PAUSE_USAGE_LIMIT` (when waiting isn't possible, see below)
 - `PAUSE_TIMEOUT` (fix step only; audit-type steps get one retry first)
 
 **On a pause:**
 1. Write `pending.md` in the run folder: what happened, what twokey needs, and the exact command or keys to continue.
 2. Send a notification.
-3. Wait at the terminal prompt. The owner can answer there, or quit (Ctrl+C) and run `twokey resume` later. This holds in both modes: autopilot doesn't wait between steps, but it does ask for decisions and rulings. Without input (end of file), the run pauses (D34).
+3. In stepper mode, a decision or ruling waits at the terminal prompt. The owner can answer there, or quit (Ctrl+C) and run `twokey resume` later. Without input (end of file), the run pauses (D34). Autopilot never waits at a prompt (D60): every pause saves the state, writes `pending.md`, notifies and exits with code 3, without pushing.
 
 **Decisions** (`PAUSE_DECISION`):
 - For each finding, show title, evidence, options and the recommendation. The owner picks an option number, types their own text, or picks `drop` (not needed). `drop` resolves the finding (section 4, case c), so it isn't sent to the fix step.
@@ -316,9 +323,20 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 
 **Rulings** (`PAUSE_ADJUDICATE`): show the finding, convergence's reason and Codex's evidence for keeping it. The owner picks `fix` or `drop` and may add a note. Save and log it like a decision.
 
+**Automatic decisions** (autopilot with `[autopilot] decide = true`, the default; D61). Autopilot answers for the owner, so a run doesn't wait for someone who isn't there:
+- A decision takes the merged finding's `recommended_option` from the convergence step.
+- A finding that Codex maintained after its re-check is treated as confirmed and fixed (ruling `fix`); the next round's audits check the result.
+- A decision without a recommended option, and a finding that came back a second time (`PAUSE_RECURRING`), are **skipped**: not fixed this round, listed in `pending.md` and the report as waiting for the owner. The rest is fixed. If only skipped findings are left, the round pauses with `PAUSE_SKIPPED`.
+- Every automatic choice goes into `decisions.md`, the report and a twokey log entry, marked "automatic": the finding, the options, the choice, and who recommended it (the convergence step, plus each blind-audit finding in `merged_from` that recommended an option, with its agent). Later prompts get it in `${decisions}` like the owner's own.
+- `twokey decide <ID> <answer>` answers a skipped finding or replaces an automatic choice: an option number, the owner's own text, `fix` or `drop` (a finding that was disputed, keeps coming back or isn't a decision takes only `fix` or `drop`). It is recorded and logged like a decision, says which automatic choice it replaces, and later steps of the run follow it. It refuses while a run is going (the lock), and on a run that converged.
+- With `decide = false`, autopilot pauses at a decision or ruling instead (`PAUSE_DECISION`, `PAUSE_ADJUDICATE`, `PAUSE_RECURRING`), and the owner answers with `twokey resume` in stepper mode or with `twokey decide`.
+- Stepper mode always asks the owner.
+
+**Stopping a run** (`twokey stop`, D63). `twokey stop` writes a request into `<run_dir>/stop`. The run reads it at the start of each agent step and every 2 seconds: it lets the running step finish, starts no new agent step (a finished fix still gets its checks and push), saves its state as stopped and exits. `twokey stop --now` also stops the running step, like Ctrl+C: the agent's processes end and its Docker resources are removed. A fix stopped this way may leave changes, which resume shows (`PAUSE_INTERRUPTED`). `twokey resume` or `twokey round` continues the run. Ending twokey from outside (closing its window, Task Manager) skips the clean-up until the next resume.
+
 **Notifications:**
 - A Windows toast through PowerShell with no extra modules, plus a terminal bell.
-- Optional phone push through ntfy: an HTTP POST with `net/http` to the topic in config (M3; until then the topic is ignored).
+- Optional phone push through ntfy: an HTTP POST with `net/http` to the topic in config (M3, v0.2.0-rc.7; until then the topic is ignored).
 - Messages say only the run ID, the event and the next action. They never include findings text or course details.
 - Send on every pause, on a finish (converged or max rounds), on a crash, and when twokey starts waiting for a usage limit.
 
@@ -338,7 +356,7 @@ Take a snapshot before each step and compare after it. Use plain `git` commands 
 - `twokey resume` picks up from the last finished step.
 - A step left `running` (because of a crash or Ctrl+C) first gets its Docker cleanup. Then it reruns if it's an audit, convergence or dispute step.
 - A `fix` left `running` pauses with the current `git status`; twokey never discards the owner's tree. If the tree is clean and HEAD is still the round's commit, the fix simply runs again.
-- After a pause, resume first resolves its reason (D32): a failed agent step runs again (also after `PAUSE_USAGE_LIMIT` and `PAUSE_TIMEOUT`); a failed check runs the checks again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues only once the remote branch is part of local history (the owner merged or rebased by hand); `PAUSE_INVARIANT` continues once the tree is clean (the owner looked and undid what was wrong); `PAUSE_PROTECTED_MOVED`, and a `PAUSE_INVARIANT` that includes a protected branch, first ask the owner to confirm the change (D40).
+- After a pause, resume first resolves its reason (D32): a failed agent step runs again (also after `PAUSE_USAGE_LIMIT` and `PAUSE_TIMEOUT`); a failed check runs the checks again; `PAUSE_NO_PROGRESS` reruns the fix if HEAD hasn't moved; `PAUSE_REMOTE_MOVED` continues only once the remote branch is part of local history (the owner merged or rebased by hand); `PAUSE_INVARIANT` continues once the tree is clean (the owner looked and undid what was wrong). A pause from before D62 that waited for the owner to confirm a protected branch takes the change as someone else's and notes it.
 - A step that answered and then paused at its checks isn't run again: resume publishes and logs its answer and goes on (D41).
 
 ---
@@ -372,6 +390,9 @@ requirements_file = "local-only_checkpoint-3-instructions.md"
 mode = "stepper"                            # or "autopilot"
 max_rounds = 4
 fix_p3 = false
+
+[autopilot]                                 # unattended rounds (--autopilot, schedules)
+decide = true                               # take the recommended option, fix what Codex maintains; false = pause for you
 
 [verify]
 commands = ["npm run lint", "npm run format:check", "npm run typecheck", "npm test", "npm run build"]
@@ -426,6 +447,7 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 - `extra_args` may not contain options twokey sets itself or never uses (section 9).
 - The two port ranges may not overlap. `branch` may not be one of the `protected_branches`.
 - `[codex] web_search` is `""`, `"disabled"`, `"cached"`, `"indexed"` or `"live"`.
+- `[autopilot] decide` (default `true`): how autopilot answers decisions and rulings (section 10, "Automatic decisions"; D61).
 - `upstream` is `""` (off) or a branch name other than `branch`. It may be, and usually is, one of the `protected_branches`: twokey only reads it and compares `branch` with it; it never moves `branch` (section 3, "Upstream").
 
 `twokey init` writes this template to the repository root. It fills in `branch` with the current branch, and `protected_branches` with the remote's default branch, when git knows them. It refuses to overwrite an existing file, and warns if `.gitignore` doesn't ignore both the config file and `run_dir`.
@@ -437,10 +459,12 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 | Command | What it does |
 |---|---|
 | `twokey init` | Creates the config template and checks `.gitignore`. |
-| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including `git fetch`, and how the branch stands to `upstream`: behind or diverged is a `[WARN]` with the count, D57), what Codex's sandbox can't run (a `[WARN]`, D51), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one small schema-constrained call to each agent and resumes it once (D48): it tests the schema options, Codex's configured sandbox (a scratch write plus one network request), that a resumed session keeps its sandbox (a second write), that each agent can read the first bytes of a file in each extra read folder, the arguments that turn off screen and browser control, and that the repository is unchanged afterwards. twokey checks the files and bytes itself instead of trusting the answers, and shows the model each CLI reports and Claude's cost estimate. It needs the config and both CLIs; other `[FAIL]` lines don't block it. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
+| `twokey doctor [--smoke]` | Checks git, both CLIs and their versions, the flags twokey uses and their allowed values (via `--help`), the config, the repo preflight (including git settings that would get agents past the push block, D62, `git fetch`, and how the branch stands to `upstream`: behind or diverged is a `[WARN]` with the count, D57), what Codex's sandbox can't run (a `[WARN]`, D51), the staging and scratch folders, Docker (`[WARN]` only, never `[FAIL]`) and the notification setup. `--smoke` makes one small schema-constrained call to each agent and resumes it once (D48): it tests the schema options, Codex's configured sandbox (a scratch write plus one network request), that a resumed session keeps its sandbox (a second write), that each agent can read the first bytes of a file in each extra read folder, that the push block reaches each agent's commands (`git remote get-url --push` prints the blocked URL, D62), the arguments that turn off screen and browser control, and that the repository is unchanged afterwards. twokey checks the files and bytes itself instead of trusting the answers, and shows the model each CLI reports and Claude's cost estimate. It needs the config and both CLIs; other `[FAIL]` lines don't block it. Prints `[OK]`, `[WARN]` or `[FAIL]` lines with the next step for each failure. Exit code 1 if any check failed. |
 | `twokey run [--autopilot] [--max-rounds N]` | Starts a run. Refuses if preflight fails. `--fake-agents <folder>` plays scripted answers instead of calling the CLIs (tests and demos). |
 | `twokey round [--autopilot]` | Runs one round and stops after its push (section 3, "One round"; D58). It continues the latest run, or starts a new one if the latest converged. Takes `--fake-agents` like `run`. |
 | `twokey resume [--run ID] [--more-rounds N]` | Continues the latest (or given) run. Takes `--autopilot` and `--fake-agents` like `run`. |
+| `twokey decide <ID> <answer>` | Answers a finding of the latest run: one that autopilot skipped, or one it decided for the owner (section 10, D61). |
+| `twokey stop [--now]` | Stops the run that is going, before its next agent step, or with `--now` during the current one (section 10, D63). |
 | `twokey status [--run ID]` | One screen: run, status (running with its process, paused with the reason), round, each step's status, time and tries, the last gate result, and what to do next. |
 | `twokey render <step> [--round N]` | Renders a prompt without running it, for tuning templates. |
 | `twokey report [--run ID]` | Rebuilds `report.md`. |
@@ -452,11 +476,11 @@ ntfy_topic = ""                             # "" = off (phone push arrives in v0
 - After each step, it shows a findings table (ID, severity, kind, status, title) and the gate's next action. It doesn't wait there: the next step's prompt, or a question for the owner, is the one stop between steps (D56).
 - When an answer is sent back for a second try (section 9), a `[WARN]` names the reasons, and the heartbeat shows the step as `(try 2)`.
 
-**Autopilot:** no prompts, except the pauses in section 10. Show the heartbeat, a one-line result per step, and the gate result per round.
+**Autopilot:** no prompts at all (D60). Show the heartbeat, a one-line result per step, and the gate result per round. Decisions and rulings are answered as in section 10, "Automatic decisions", and every pause exits. While the loop runs, twokey keeps the computer awake (D64).
 
 Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
 
-**Exit codes** of `run` and `resume` (D31): 0 = converged, or the owner stopped the run to resume later; 1 = preflight failed or something broke; 2 = wrong command line; 3 = paused, waiting for the owner (every `PAUSE_*` reason, including `PAUSE_PROTECTED_MOVED`, and a resume where the owner didn't confirm a protected branch change); 4 = stopped after the last round with findings left; 5 = one round (`twokey round`) is done: its fix is pushed but not audited yet (D58).
+**Exit codes** of `run` and `resume` (D31): 0 = converged, or the owner stopped the run to resume later; 1 = preflight failed or something broke; 2 = wrong command line; 3 = paused, waiting for the owner (every `PAUSE_*` reason); 4 = stopped after the last round with findings left; 5 = one round (`twokey round`) is done: its fix is pushed but not audited yet (D58).
 
 ---
 
@@ -465,6 +489,7 @@ Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
 ```
 <run_dir>/
   lock                                  # PID + run ID, held for the whole run
+  stop                                  # a request from twokey stop, used up when read (D63)
   templates/                            # optional per-project template overrides
   runs/<YYYYMMDDTHHMMZ>-<label-slug>/
     state.json   decisions.md   pending.md   report.md
@@ -483,7 +508,7 @@ Status labels are plain ASCII: `[OK]`, `[WARN]`, `[FAIL]`, `[PAUSE]`, `[..]`.
 3. Commits pushed (short SHA and subject).
 4. **For the owner / the team:** all `external_evidence` items, merged across rounds.
 5. P3 items not fixed.
-6. Decisions and rulings.
+6. Waiting for the owner, if any: findings autopilot skipped, with how to answer each (D61). Then decisions and rulings, the automatic ones marked, with how to change them.
 7. Disputes and how they ended.
 8. Permission denials (Claude) and sandbox refusals (Codex), with the rule the owner could add.
 9. Time per step; Claude's estimated cost and Codex's token usage.
@@ -642,7 +667,7 @@ ${p3_rule}
   - the log heading label: reported model with and without a `[model_names]` entry, no reported model, and the mismatch flag;
   - Docker cleanup with a fake `docker`: only names with the step's prefix are removed, also when another name merely contains the prefix.
 - Tests never read or write the developer's real home, git config or projects: they use `t.TempDir()` and `t.Setenv` (including `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`).
-- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. The scenario format is described in `internal/runner/fake.go`: per round, `<step>.json` answers (with `${commit}` and `${new_commits}`), `<step>.<attempt>.json` for a resumed retry, and `<step>.actions.json` for what the fake agent does first: write files, commit, append to a file, push, or let a teammate push to the branch or, with `teammate_branch`, to another one (D37, D40). End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent pushing by itself (expect `PAUSE_INVARIANT`); resume after a pause at a step's checks (D41). With `upstream` set (D39, D57): behind and diverged (a warning, nothing moves, the round audits the branch as it is), ahead, equal, and the upstream moving during a round. Protected branches (D40): one moved by someone else during a step (`PAUSE_PROTECTED_MOVED`; only `y` confirms), and one moved together with an agent's push (`PAUSE_INVARIANT`). Running agents (M2): an audit's timeout gets one fresh try, two mean `PAUSE_TIMEOUT`; a fix's timeout pauses at once; a usage limit with a near reset time is waited out, one without pauses (`PAUSE_USAGE_LIMIT`), and a fix that committed before its limit pauses; Docker cleanup after every step; Claude session IDs chosen up front; usage of a resumed Claude session counted once, whether or not Claude restored its earlier totals; an answer sent back is shown and reported; raw output published; the heartbeat; one stop between steps in stepper mode, with the checks' own prompt; `status` and `report`. One round (D58): it stops after the push and the next one continues the run; nothing runs after a convergence until the branch moves; it fixes past `max_rounds`; it finishes a round that stopped before its fix, and the last round of a run stopped at `max_rounds`; between rounds it needs a clean start.
+- **Fake agents:** `--fake-agents <scenario-folder>` replaces both runners with scripted answers per (round, step). A fake fix step makes a real commit. The scenario format is described in `internal/runner/fake.go`: per round, `<step>.json` answers (with `${commit}` and `${new_commits}`), `<step>.<attempt>.json` for a resumed retry, and `<step>.actions.json` for what the fake agent does first: write files, commit, append to a file, push, or let a teammate push to the branch or, with `teammate_branch`, to another one (D37, D40), or set git config (D62). A fake agent's push uses the agents' environment, so the push block applies to it. End-to-end tests run whole loops in a temp git repo with a local bare "remote", covering: converge in round 1; fix then converge; dispute withdrawn; dispute maintained then ruling; decision pause; recurrence; max rounds; verify failure then success; remote moved; an agent touching the log (expect `PAUSE_INVARIANT`); an agent's own push fails (D62), while one that adds a `pushurl` gets through and is caught (`PAUSE_INVARIANT`); preflight refuses a `pushurl`; resume after a pause at a step's checks (D41). With `upstream` set (D39, D57): behind and diverged (a warning, nothing moves, the round audits the branch as it is), ahead, equal, and the upstream moving during a round. Protected branches (D40, D62): one moved during a step is noted and accepted, and one moved while an agent got past the push block is part of a `PAUSE_INVARIANT`. Running agents (M2): an audit's timeout gets one fresh try, two mean `PAUSE_TIMEOUT`; a fix's timeout pauses at once; a usage limit with a near reset time is waited out, one without pauses (`PAUSE_USAGE_LIMIT`), and a fix that committed before its limit pauses; Docker cleanup after every step; Claude session IDs chosen up front; usage of a resumed Claude session counted once, whether or not Claude restored its earlier totals; an answer sent back is shown and reported; raw output published; the heartbeat; one stop between steps in stepper mode, with the checks' own prompt; `status` and `report`. One round (D58): it stops after the push and the next one continues the run; nothing runs after a convergence until the branch moves; it fixes past `max_rounds`; it finishes a round that stopped before its fix, and the last round of a run stopped at `max_rounds`; between rounds it needs a clean start. Autopilot (D60, D61): the recommended option is taken and recorded with who recommended it; a decision without a recommendation and a recurring finding are skipped while the rest is fixed; only skipped findings left means `PAUSE_SKIPPED`, also on the next try, until `twokey decide`; a maintained dispute is fixed; with `decide = false` it pauses; `twokey decide` replaces an automatic choice and refuses wrong answers. `twokey stop` (D63) stops before the next agent step, and `--now` cancels the running one; keep-awake is held for the loop (D64). The push block itself is tested with a local bare remote: push by name and by URL fails, fetch and `ls-remote` work, and a `pushurl` or another `pushInsteadOf` gets past it, which is why twokey refuses them.
 - **Real CLIs without calling them:** the command lines are built by pure functions with table tests, and the output parsers and runs are tested with output in the documented formats, written by a fake launcher. The process tree launcher is tested with the test binary as child and grandchild. `doctor --smoke` is tested with fake agents that do what the prompt asks.
 - **CI:** GitHub Actions on `windows-latest` and `ubuntu-latest`, running `go vet` and `go test` (plus `go test -race` on Linux), `golangci-lint`, `govulncheck` and a `go mod tidy` check. Actions are pinned to full commit SHAs and tool versions are pinned; new versions must be at least 7 days old (D2). No real agent calls in CI, ever.
 - **Smoke test on the owner's machine:** `twokey doctor --smoke`, with their OK.

@@ -120,6 +120,20 @@ func TestDecide(t *testing.T) {
 				m("R1-M-01", "P1", "repo_fix", "confirmed", "R1-CX-01"),
 				m("R1-M-02", "P2", "needs_decision", "confirmed", "R1-CX-02"),
 			)}, PauseDecision, []string{"R1-M-02"}},
+		// Skipped by autopilot (D61): not fixed, not converged.
+		{"skipped: the rest is fixed", Input{Codex: audit(cx1, cx2), Round: 1, MaxRounds: 4, Skipped: map[string]bool{"R1-M-02": true},
+			Convergence: conv(
+				m("R1-M-01", "P1", "repo_fix", "confirmed", "R1-CX-01"),
+				m("R1-M-02", "P2", "needs_decision", "confirmed", "R1-CX-02"),
+			)}, Fix, []string{"R1-M-01"}},
+		{"only skipped findings left: they wait for the owner", Input{Codex: audit(cx2), Round: 1, MaxRounds: 4, Skipped: map[string]bool{"R1-M-01": true},
+			Convergence: conv(m("R1-M-01", "P2", "needs_decision", "confirmed", "R1-CX-02"))}, PauseSkipped, []string{"R1-M-01"}},
+		{"a skipped recurring finding doesn't pause", Input{Codex: audit(cx1), Lineage: map[string]int{"R3-M-01": 2, "R3-M-02": 0}, Round: 3, MaxRounds: 4,
+			Skipped: map[string]bool{"R3-M-01": true},
+			Convergence: conv(
+				m("R3-M-01", "P1", "repo_fix", "confirmed", "R1-CX-01"),
+				m("R3-M-02", "P2", "repo_fix", "confirmed"),
+			)}, Fix, []string{"R3-M-02"}},
 		{"a decision is needed even in the last round", Input{Codex: audit(cx2), Round: 4, MaxRounds: 4,
 			Convergence: conv(m("R4-M-01", "P2", "needs_decision", "confirmed", "R1-CX-02"))}, PauseDecision, []string{"R4-M-01"}},
 	}

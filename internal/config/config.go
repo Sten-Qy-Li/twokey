@@ -21,6 +21,7 @@ type Config struct {
 	Project    Project           `toml:"project"`
 	Checkpoint Checkpoint        `toml:"checkpoint"`
 	Loop       Loop              `toml:"loop"`
+	Autopilot  Autopilot         `toml:"autopilot"`
 	Verify     Verify            `toml:"verify"`
 	Codex      Codex             `toml:"codex"`
 	Claude     Claude            `toml:"claude"`
@@ -53,6 +54,11 @@ type Loop struct {
 	Mode      string `toml:"mode"`
 	MaxRounds int    `toml:"max_rounds"`
 	FixP3     bool   `toml:"fix_p3"`
+}
+
+// Autopilot is the [autopilot] section: how unattended rounds decide.
+type Autopilot struct {
+	Decide bool `toml:"decide"` // take the recommended option, fix what Codex maintained (D61)
 }
 
 // Verify is the [verify] section.
@@ -120,7 +126,8 @@ func Default() *Config {
 			RunDir:            "local-only_twokey",
 			ExtraReadDirs:     []string{},
 		},
-		Loop: Loop{Mode: "stepper", MaxRounds: 4},
+		Loop:      Loop{Mode: "stepper", MaxRounds: 4},
+		Autopilot: Autopilot{Decide: true},
 		Codex: Codex{
 			Command:     "codex",
 			LabelPrefix: "Codex",

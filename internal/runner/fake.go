@@ -38,7 +38,8 @@ type Actions struct {
 	Write    map[string]string `json:"write"`     // files to write, relative to the repo
 	Commit   string            `json:"commit"`    // commit everything with this message
 	Append   map[string]string `json:"append"`    // text to append to files (to break rules)
-	Push     bool              `json:"push"`      // push the branch (to break rules)
+	Config   map[string]string `json:"config"`    // git config settings to make first (to break rules)
+	Push     bool              `json:"push"`      // try to push the branch, with the agents' environment (to break rules)
 	NoAnswer string            `json:"no_answer"` // end without an answer, with this problem
 	// TeammatePush makes a commit with this message in a separate clone of
 	// the remote and pushes it to TeammateBranch (default: the current
@@ -71,7 +72,7 @@ func (f Fake) Run(ctx context.Context, req Request) Result {
 		res.Problem = err.Error()
 		return res
 	}
-	commits, err := f.act(ctx, req.RepoDir, acts)
+	commits, err := f.act(ctx, req.Env, req.RepoDir, acts)
 	if err != nil {
 		res.Problem = "the fake agent's actions failed: " + err.Error()
 		return res
@@ -108,8 +109,13 @@ func (f Fake) Run(ctx context.Context, req Request) Result {
 }
 
 // act carries out the actions and returns the commits it made.
-func (f Fake) act(ctx context.Context, dir string, a Actions) ([]string, error) {
+func (f Fake) act(ctx context.Context, env []string, dir string, a Actions) ([]string, error) {
 	repo := gitx.Repo{Dir: dir, R: f.Git}
+	for _, k := range sortedKeys(a.Config) {
+		if _, err := repo.Output(ctx, "config", k, a.Config[k]); err != nil {
+			return nil, err
+		}
+	}
 	for _, rel := range sortedKeys(a.Write) {
 		p := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -149,9 +155,9 @@ func (f Fake) act(ctx context.Context, dir string, a Actions) ([]string, error) 
 		}
 	}
 	if a.Push {
-		if _, err := repo.Output(ctx, "push", "--quiet"); err != nil {
-			return nil, err
-		}
+		// Like a real agent, the fake one carries on if the push fails: the
+		// checks after the step judge what happened.
+		f.Git.Run(ctx, proc.Cmd{Dir: dir, Name: "git", Args: []string{"push", "--quiet"}, Env: append([]string{"GIT_TERMINAL_PROMPT=0"}, env...)})
 	}
 	if a.TeammatePush != "" {
 		if err := teammatePush(ctx, repo, f.Git, a.TeammatePush, a.TeammateBranch); err != nil {

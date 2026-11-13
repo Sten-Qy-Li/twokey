@@ -27,6 +27,8 @@ Commands:
   run       Start a run
   round     Run one round (audits to push), then stop
   resume    Continue a paused or stopped run
+  decide    Answer a finding, or change an automatic decision
+  stop      Stop a run that is going
   render    Show a prompt without running it
   unlock    Remove a stale lock
   status    Show the current run
@@ -91,6 +93,10 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runStatus(ctx, rest, env)
 	case "report":
 		return runReport(ctx, rest, env)
+	case "decide":
+		return runDecide(ctx, rest, env)
+	case "stop":
+		return runStop(ctx, rest, env)
 	default:
 		fmt.Fprintf(env.Err, "twokey: unknown command %q. Run \"twokey help\" to see the commands.\n", cmd)
 		return 2

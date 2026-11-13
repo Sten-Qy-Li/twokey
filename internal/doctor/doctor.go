@@ -336,6 +336,16 @@ func (d *doctor) checkRepo(root string, cfg *config.Config) {
 		d.ok("The working tree is clean")
 	}
 
+	switch bypass, err := repo.PushBypasses(ctx); {
+	case err != nil:
+		d.fail("Can't read git's push settings: " + err.Error())
+	case len(bypass) > 0:
+		d.fail("These git settings would let agents push past twokey's block: "+strings.Join(bypass, "; "),
+			"remove them: "+gitx.UnsetHint(bypass[0])+". twokey pushes without them.")
+	default:
+		d.ok("No pushurl or pushInsteadOf setting gets past twokey's push block for agents")
+	}
+
 	d.checkRemote(root, p)
 	d.checkFiles(root, cfg)
 }

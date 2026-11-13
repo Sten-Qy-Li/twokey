@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 var (
 	createRe = regexp.MustCompile(`(?i)create the file (.+?) containing`)
 	readRe   = regexp.MustCompile(`(?m)^   - (.+)$`)
+	pushRe   = regexp.MustCompile(`into the file (.+?): git remote get-url --push (\S+)`)
 )
 
 // fakeAgents plays both CLIs for the smoke test: they do what the prompt
@@ -31,6 +33,16 @@ func fakeAgents(t *testing.T, broken string) func(context.Context, proc.TreeCmd)
 		}
 		if m := createRe.FindStringSubmatch(c.Stdin); m != nil && broken != agent+" can't write" {
 			if err := os.WriteFile(m[1], []byte("ok"), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+		// The agent's git prints the push URL its environment gives it.
+		if m := pushRe.FindStringSubmatch(c.Stdin); m != nil {
+			url := "git@example.invalid:team/project.git"
+			if slices.Contains(c.Env, "GIT_CONFIG_KEY_0=url.twokey-agents-may-not-push::.pushInsteadOf") && broken != agent+" can push" {
+				url = "twokey-agents-may-not-push::" + url
+			}
+			if err := os.WriteFile(m[1], []byte(url+"\n"), 0o600); err != nil {
 				t.Error(err)
 			}
 		}
@@ -93,6 +105,8 @@ func TestSmoke(t *testing.T) {
 		"[OK]    Codex wrote a file to its scratch folder",
 		"[OK]    Codex reached the network (HTTP 200)",
 		"[OK]    Codex can read ",
+		"[OK]    Codex's commands can't push: twokey's push block reaches them",
+		"[OK]    Claude Code's commands can't push: twokey's push block reaches them",
 		`[OK]    Codex doesn't report its model, so log headings use [codex] label: "Codex - GPT-6.1-Sol"`,
 		"[OK]    Codex accepted the options that turn off screen and browser control",
 		"[OK]    A resumed Codex session keeps its sandbox",
@@ -113,6 +127,14 @@ func TestSmoke(t *testing.T) {
 func TestSmokeFindsABrokenSandbox(t *testing.T) {
 	out, code := smokeProject(t, "codex can't write")
 	if code != 1 || !strings.Contains(out, `[FAIL]  Codex couldn't write to its scratch folder with [codex] sandbox = "workspace-write".`) {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+// The push block must reach the commands an agent runs (D62).
+func TestSmokeFindsAnAgentThatCanPush(t *testing.T) {
+	out, code := smokeProject(t, "claude can push")
+	if code != 1 || !strings.Contains(out, "[FAIL]  Claude Code's commands can still push: their git push URL is git@example.invalid:team/project.git.") {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 }

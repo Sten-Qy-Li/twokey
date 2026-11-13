@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Sten-Qy-Li/twokey/internal/gate"
+	"github.com/Sten-Qy-Li/twokey/internal/gitx"
 	"github.com/Sten-Qy-Li/twokey/internal/invariant"
 	"github.com/Sten-Qy-Li/twokey/internal/logfile"
 	"github.com/Sten-Qy-Li/twokey/internal/proc"
@@ -36,6 +37,11 @@ func (e *engine) preflight(ctx context.Context) bool {
 	}
 	if st, err := e.repo.Status(ctx); err != nil || st != "" {
 		fail("The working tree is not clean:"+indent(st), "commit the changes, or make git ignore them.")
+	}
+	if bypass, err := e.repo.PushBypasses(ctx); err != nil {
+		fail("Can't read git's push settings: "+err.Error(), "")
+	} else if len(bypass) > 0 {
+		fail("These git settings would let agents push past twokey's block:"+indent(strings.Join(bypass, "\n")), gitx.UnsetHint(bypass[0]))
 	}
 	if ign, err := e.repo.IsIgnored(ctx, p.RunDir); err != nil || !ign {
 		fail("git does not ignore "+p.RunDir+".", "add this line to .gitignore: /"+p.RunDir+"/")
@@ -118,6 +124,9 @@ func (e *engine) prepare(r *state.Round, s *state.Step, step string, extra map[s
 // before asks the owner in stepper mode, and opens the editor on "e". It
 // returns the prompts to send, by step name, or false if the owner quit.
 func (e *engine) before(what string, steps []*state.Step) (map[string]string, bool) {
+	if e.stopRequested() {
+		return nil, false
+	}
 	var paths []string
 	for _, s := range steps {
 		paths = append(paths, s.Prompt)
@@ -247,7 +256,10 @@ func (e *engine) maskTeammatePush(ctx context.Context, before invariant.Snapshot
 // checkStep compares the snapshots around an agent step (SPEC section 8),
 // plus state.json against what twokey last wrote. It pauses and returns
 // false if the step changed what it must not change. dirtyOK accepts
-// uncommitted changes, for a fix that was cut short.
+// uncommitted changes, for a fix that was cut short. Agents can't push
+// (D62), so a protected branch that moved during the step is someone
+// else's change: twokey notes it and goes on, unless the step also broke a
+// rule, such as changing the push settings.
 func (e *engine) checkStep(ctx context.Context, what string, before, after invariant.Snapshot, fix, dirtyOK bool) bool {
 	e.maskTeammatePush(ctx, before, &after)
 	moved := e.movedProtected(before, &after)
@@ -263,10 +275,14 @@ func (e *engine) checkStep(ctx context.Context, what string, before, after invar
 	if h, err := logfile.Hash(filepath.Join(e.runDir, state.FileName)); err != nil || h != e.stateHash {
 		v = append(v, "twokey's file state.json was changed.")
 	}
-	if len(v) == 0 && len(moved) == 0 {
+	if len(v) == 0 {
+		e.acceptMoved(what, before.Remote, moved)
 		return true
 	}
-	return e.stepViolated(ctx, what, v, before.Remote, moved)
+	if len(moved) > 0 {
+		v = append(v, "A protected branch moved during the step too:\n"+e.describeMoves(ctx, before.Remote, moved))
+	}
+	return e.invariantFailed(what, v)
 }
 
 func (e *engine) invariantFailed(what string, problems []string) bool {
@@ -343,7 +359,7 @@ func (e *engine) audits(ctx context.Context, r *state.Round) bool {
 		}
 		wg.Wait()
 		if ctx.Err() != nil {
-			e.stop("Stopped (Ctrl+C).")
+			e.stop(e.interrupted())
 			return false
 		}
 		after, ok := e.snapshot(ctx)
@@ -423,7 +439,7 @@ func (e *engine) readOnlyStep(ctx context.Context, r *state.Round, s *state.Step
 	}
 	o := e.runAgent(ctx, r, s, step, prompt, "", check)
 	if ctx.Err() != nil {
-		e.stop("Stopped (Ctrl+C).")
+		e.stop(e.interrupted())
 		return false
 	}
 	after, ok := e.snapshot(ctx)
@@ -496,6 +512,7 @@ func (e *engine) ask(r *state.Round, g gate.Result) bool {
 		}
 		var kind, answer, note string
 		var quit bool
+		ruling := "ruling"
 		switch g.Action {
 		case gate.PauseDecision:
 			kind = "decision"
@@ -504,32 +521,51 @@ func (e *engine) ask(r *state.Round, g gate.Result) bool {
 			kind = "ruling"
 			answer, note, quit = e.o.UI.Rule(m, evidence[id])
 		default:
-			kind = "ruling on a recurring finding"
+			kind, ruling = "ruling on a recurring finding", "ruling on a recurring finding"
 			answer, note, quit = e.o.UI.Recurring(m, lineage[id])
 		}
 		if quit {
 			return e.pause(string(g.Action), fmt.Sprintf("Round %d needs your answer on %s.", r.N, strings.Join(g.IDs, ", ")),
 				"Run twokey resume and answer at the prompt.", "", g.IDs)
 		}
-		if !e.record(r, m, kind, answer, note) {
+		if kind != "decision" {
+			kind = ruling
+		}
+		if note != "" {
+			note = "Note: " + note
+		}
+		if !e.record(r, m, kind, answer, note, false) {
 			return false
 		}
 	}
 	return true
 }
 
-// record saves a decision or ruling: state, decisions.md and the log.
-func (e *engine) record(r *state.Round, m schema.MergedFinding, kind, answer, note string) bool {
+// record saves a decision or ruling, the owner's or an automatic one
+// (D61): state, decisions.md and a twokey log entry. kind is "decision" or
+// a kind of ruling; detail follows the answer.
+func (e *engine) record(r *state.Round, m schema.MergedFinding, kind, answer, detail string, auto bool) bool {
 	e.update(func() {
 		if kind == "decision" {
 			e.st.Decisions[m.ID] = answer
 		} else {
 			e.st.Rulings[m.ID] = answer
 		}
+		if auto {
+			if e.st.Automatic == nil {
+				e.st.Automatic = map[string]string{}
+			}
+			e.st.Automatic[m.ID] = answer
+		} else {
+			delete(e.st.Automatic, m.ID)
+		}
 	})
+	if auto {
+		kind = "automatic " + kind
+	}
 	line := fmt.Sprintf("- **%s** (%s, round %d): %s → **%s**", m.ID, kind, r.N, m.Title, answer)
-	if note != "" {
-		line += ". Note: " + note
+	if detail != "" {
+		line += ". " + detail
 	}
 	path := filepath.Join(e.runDir, "decisions.md")
 	old, err := os.ReadFile(path)
@@ -542,7 +578,11 @@ func (e *engine) record(r *state.Round, m schema.MergedFinding, kind, answer, no
 	if _, err := e.insertLog(e.twokeyLabel(), r.N, kind, line); err != nil {
 		return e.logFailed(err)
 	}
-	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("Saved: %s → %s", m.ID, answer))
+	what := "Saved"
+	if auto {
+		what = "Automatic " + strings.TrimPrefix(kind, "automatic ")
+	}
+	ui.Line(e.o.Out, ui.OK, fmt.Sprintf("%s: %s → %s", what, m.ID, answer))
 	return true
 }
 
@@ -581,7 +621,7 @@ func (e *engine) runFix(ctx context.Context, r *state.Round, s *state.Step, ids 
 		return e.checkCommits(ctx, r, f.Commits)
 	})
 	if ctx.Err() != nil {
-		e.stop("Stopped (Ctrl+C). The fix step may have left changes; resume checks them.")
+		e.stop(e.interrupted() + " The fix step may have left changes; resume checks them.")
 		return false
 	}
 	// A fix that was cut short may leave changes; its own pause says so.
@@ -665,6 +705,10 @@ func (e *engine) verify(ctx context.Context, r *state.Round) bool {
 		return true
 	}
 	fs := r.Step(state.Fix)
+	if e.stopRequested() {
+		ui.Line(e.o.Out, ui.Fail, fmt.Sprintf("The check %q failed after the fix.", failed))
+		return e.quit() // resume runs the checks again, then gives the fix its retry
+	}
 	if r.VerifyRetries > 0 || fs == nil || fs.SessionID == "" {
 		return e.pause(PauseVerify, fmt.Sprintf("The check %q failed after the fix.", failed),
 			"Read verify.log in the run folder. Fix the problem yourself and commit, then run twokey resume.", "verify", nil)

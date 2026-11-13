@@ -84,9 +84,11 @@ func (d *doctor) smokeAgent(x *runner.Real, cfg *config.Config, root, agent, scr
 	if agent == "claude" {
 		name = "Claude Code"
 	}
+	pushFile := filepath.Join(scratch, agent+"-push.txt")
 	req := runner.Request{Agent: agent, Name: "smoke-" + agent, Step: schema.Smoke, Attempt: 1,
-		Prompt: smokePrompt(filepath.Join(scratch, agent+"-1.txt"), network, probes), RepoDir: root, ScratchDir: scratch,
-		OutBase: filepath.Join(staging, agent+".1")}
+		Prompt:  smokePrompt(filepath.Join(scratch, agent+"-1.txt"), pushFile, cfg.Project.Remote, network, probes),
+		RepoDir: root, ScratchDir: scratch, OutBase: filepath.Join(staging, agent+".1"),
+		Env: gitx.PushBlockEnv(os.Getenv)} // the same push block as in runs (D62)
 	if agent == "claude" {
 		req.SessionID = uuid()
 	}
@@ -117,6 +119,7 @@ func (d *doctor) smokeAgent(x *runner.Real, cfg *config.Config, root, agent, scr
 		}
 	}
 	d.checkReads(name, probes, first.Reads)
+	d.checkPushBlock(name, agent, pushFile)
 	d.smokeReport(name, agent, cfg, res)
 
 	if res.SessionID == "" {
@@ -253,7 +256,27 @@ func firstFile(dir string) string {
 	return found
 }
 
-func smokePrompt(file string, network bool, probes []probe) string {
+// checkPushBlock looks at the push URL the agent's own git command printed:
+// twokey's push block must reach the commands agents run (D62).
+func (d *doctor) checkPushBlock(name, agent, file string) {
+	data, err := os.ReadFile(file)
+	url := strings.TrimSpace(string(data))
+	switch {
+	case err != nil || url == "":
+		d.fail(name+" didn't write its git push URL, so twokey can't tell whether its commands can push.",
+			"run twokey doctor --smoke again. If this keeps failing, report it with the raw output shown below.")
+	case gitx.PushBlocked(url):
+		d.ok(name + "'s commands can't push: twokey's push block reaches them")
+	case agent == "codex":
+		d.fail("Codex's commands can still push: their git push URL is "+url+".",
+			"check shell_environment_policy in your Codex config: it must pass GIT_CONFIG_COUNT, GIT_CONFIG_KEY_* and GIT_CONFIG_VALUE_* to commands.")
+	default:
+		d.fail(name+"'s commands can still push: their git push URL is "+url+".",
+			"don't run twokey unattended until this is solved. Report it with the raw output shown below.")
+	}
+}
+
+func smokePrompt(file, pushFile, remote string, network bool, probes []probe) string {
 	var b strings.Builder
 	b.WriteString("This is a smoke test by twokey, a tool that runs you in unattended steps. Do exactly the following, change nothing else, and answer with only the JSON object that the schema asks for. Nobody can answer questions.\n\n")
 	fmt.Fprintf(&b, "1. Create the file %s containing the text: ok\n   Set \"wrote\" to true if that worked.\n", file)
@@ -270,7 +293,8 @@ func smokePrompt(file string, network bool, probes []probe) string {
 			fmt.Fprintf(&b, "   - %s\n", p.file)
 		}
 	}
-	b.WriteString("4. In \"note\", say briefly what went wrong, or write \"\".\n")
+	fmt.Fprintf(&b, "4. In the repository, run this command and write its output, exactly, into the file %s: git remote get-url --push %s\n", pushFile, remote)
+	b.WriteString("5. In \"note\", say briefly what went wrong, or write \"\".\n")
 	return b.String()
 }
 

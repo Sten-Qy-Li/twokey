@@ -113,6 +113,15 @@ type Round struct {
 	VerifyRetries int    `json:"verify_retries"`
 	Pushed        bool   `json:"pushed"`
 	PushedSHA     string `json:"pushed_sha,omitempty"` // HEAD as pushed
+	// Skipped holds the findings autopilot skipped in this round, because
+	// they need the owner (DECISIONS.md D61).
+	Skipped []Skip `json:"skipped,omitempty"`
+}
+
+// Skip is a finding autopilot left for the owner, and why.
+type Skip struct {
+	ID  string `json:"id"`
+	Why string `json:"why"`
 }
 
 // Pause says why the run waits for the owner.
@@ -143,8 +152,11 @@ type State struct {
 	Rounds        []*Round          `json:"rounds"`
 	Decisions     map[string]string `json:"decisions"`
 	Rulings       map[string]string `json:"rulings"`
-	Notes         []string          `json:"notes,omitempty"`        // for the report
-	CodexLimits   []string          `json:"codex_limits,omitempty"` // commands that fail in Codex's sandbox (D51)
+	// Automatic holds the decisions and rulings autopilot took for the
+	// owner, by finding ID (D61). The owner's own answer removes one.
+	Automatic   map[string]string `json:"automatic,omitempty"`
+	Notes       []string          `json:"notes,omitempty"`        // for the report
+	CodexLimits []string          `json:"codex_limits,omitempty"` // commands that fail in Codex's sandbox (D51)
 }
 
 // Current returns the round in progress, or nil before round 1.

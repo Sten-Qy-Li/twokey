@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
+	"github.com/Sten-Qy-Li/twokey/internal/awake"
 	"github.com/Sten-Qy-Li/twokey/internal/config"
 	"github.com/Sten-Qy-Li/twokey/internal/docker"
 	"github.com/Sten-Qy-Li/twokey/internal/engine"
@@ -61,6 +63,15 @@ func engineOptions(env Env, root string, cfg *config.Config, fake string, autopi
 	if scratch == "" {
 		scratch = paths.ScratchRoot()
 	}
+	// Autopilot never waits at a prompt: it answers for the owner, or it
+	// pauses (D60, D61).
+	decisions := engine.AskOwner
+	if autopilot {
+		decisions = engine.WaitOwner
+		if cfg.Autopilot.Decide {
+			decisions = engine.Recommended
+		}
+	}
 	o := engine.Options{
 		Root: root, Cfg: cfg, Proc: env.Runner, Out: env.Out,
 		Runner:      runner.NewReal(cfg, env.Runner),
@@ -68,13 +79,14 @@ func engineOptions(env Env, root string, cfg *config.Config, fake string, autopi
 		UI:          engine.NewTextUI(env.In, env.Out, autopilot),
 		StagingRoot: staging, ScratchRoot: scratch,
 		MaxRounds: maxRounds, Autopilot: autopilot, Editor: editor(),
+		Decisions: decisions, KeepAwake: awake.Hold,
 	}
 	if fake != "" {
 		if !filepath.IsAbs(fake) {
 			fake = filepath.Join(env.Dir, fake)
 		}
 		// Fake agents start no containers, and tests never call Docker.
-		o.Runner, o.Docker, o.FakeAgents = runner.Fake{Dir: fake, Git: env.Runner}, nil, true
+		o.Runner, o.Docker, o.FakeAgents, o.KeepAwake = runner.Fake{Dir: fake, Git: env.Runner}, nil, true, nil
 	}
 	return o, nil
 }
@@ -152,6 +164,53 @@ func runResume(ctx context.Context, args []string, env Env) int {
 		return 1
 	}
 	return engine.Resume(ctx, o, *runID, *more)
+}
+
+func runDecide(ctx context.Context, args []string, env Env) int {
+	fs := newFlags("decide", "Answers a finding of the latest run: one that autopilot skipped, or one it decided for you.\n"+
+		"Usage: twokey decide <ID> <answer>. The answer is an option number, your own text, fix or drop.\n"+
+		"Later steps of the run follow it.", env)
+	configPath := fs.String("config", "", "read the config from this file instead of local-only_twokey.toml")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() < 2 {
+		fmt.Fprintln(env.Err, "Usage: twokey decide <ID> <answer>   (an option number, your own text, fix or drop)")
+		return 2
+	}
+	root, cfg, ok := project(ctx, env, *configPath)
+	if !ok {
+		return 1
+	}
+	o, err := engineOptions(env, root, cfg, "", false, 0)
+	if err != nil {
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
+		return 1
+	}
+	return engine.Decide(ctx, o, fs.Arg(0), strings.Join(fs.Args()[1:], " "))
+}
+
+func runStop(ctx context.Context, args []string, env Env) int {
+	fs := newFlags("stop", "Stops the run that is going, safely: before its next agent step,\n"+
+		"or with --now during its current one. twokey resume or twokey round continues it later.", env)
+	configPath := fs.String("config", "", "read the config from this file instead of local-only_twokey.toml")
+	now := fs.Bool("now", false, "also stop the agent step that is running")
+	if code := parse(fs, args); code >= 0 {
+		return code
+	}
+	root, cfg, ok := project(ctx, env, *configPath)
+	if !ok {
+		return 1
+	}
+	o, err := engineOptions(env, root, cfg, "", false, 0)
+	if err != nil {
+		ui.Line(env.Out, ui.Fail, ui.Sentence(err.Error()))
+		return 1
+	}
+	return engine.RequestStop(o, *now)
 }
 
 func runRender(ctx context.Context, args []string, env Env) int {

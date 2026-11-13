@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sten-Qy-Li/twokey/internal/config"
 	"github.com/Sten-Qy-Li/twokey/internal/engine"
@@ -33,6 +34,9 @@ type world struct {
 	scratch  string
 	out      bytes.Buffer
 	stepper  bool
+	// decisions is how the run answers decisions and rulings: "" asks at
+	// the prompt, as the old tests expect, even without Enter presses.
+	decisions string
 }
 
 func newWorld(t *testing.T) *world {
@@ -80,6 +84,7 @@ func (w *world) opts(input string, maxRounds int) engine.Options {
 		UI:          engine.NewTextUI(strings.NewReader(input), &w.out, !w.stepper),
 		StagingRoot: w.staging, ScratchRoot: w.scratch,
 		FakeAgents: true, MaxRounds: maxRounds, Autopilot: !w.stepper,
+		Decisions: w.decisions, StopPoll: 10 * time.Millisecond,
 	}
 }
 
@@ -440,16 +445,46 @@ func TestAgentTouchesTheLog(t *testing.T) {
 	w.outHas("The log file changed.")
 }
 
-func TestAgentPushesByItself(t *testing.T) {
+// Agents can't push (D62): the fix step's own push fails, nothing moves on
+// the remote during the step, and twokey pushes after its checks.
+func TestAgentCantPush(t *testing.T) {
 	w := newWorld(t)
 	w.oneFinding(1, "")
 	w.actions(1, "fix", runner.Actions{Write: map[string]string{"fixed.txt": "x"}, Commit: "Fix", Push: true})
+	w.file(1, "fix.json", fixAnswer("R1-M-01"))
+	w.cleanRound(2)
+	w.expect(w.start(""), engine.ExitDone)
+	if st := w.state(); st.Status != state.Converged || !st.Rounds[0].Pushed {
+		t.Errorf("status %s", st.Status)
+	}
+	if strings.Contains(w.out.String(), "Branch feature changed on the remote") {
+		t.Errorf("the agent's push got through:\n%s", w.out.String())
+	}
+}
+
+// An agent that adds a pushurl gets past the block, so the check after the
+// step catches the setting as well as the push.
+func TestAgentGetsPastThePushBlock(t *testing.T) {
+	w := newWorld(t)
+	w.oneFinding(1, "")
+	w.actions(1, "fix", runner.Actions{Config: map[string]string{"remote.origin.pushurl": w.repo.Remote},
+		Write: map[string]string{"fixed.txt": "x"}, Commit: "Fix", Push: true})
 	w.file(1, "fix.json", fixAnswer("R1-M-01"))
 	w.expect(w.start(""), engine.ExitPaused)
 	if st := w.state(); st.Pause.Reason != "PAUSE_INVARIANT" {
 		t.Errorf("pause: %+v", st.Pause)
 	}
+	w.outHas("git's push settings changed, so an agent may have tried to get past twokey's push block.")
 	w.outHas("Branch feature changed on the remote")
+}
+
+// twokey doesn't start while a setting would get agents past the block.
+func TestPreflightRefusesAPushURL(t *testing.T) {
+	w := newWorld(t)
+	testutil.Git(t, w.repo.Dir, "config", "remote.origin.pushurl", w.repo.Remote)
+	w.expect(w.start(""), engine.ExitError)
+	w.outHas("These git settings would let agents push past twokey's block:")
+	w.outHas("Next: git config --unset-all remote.origin.pushurl")
 }
 
 func TestAuditMustNotChangeTheRepo(t *testing.T) {

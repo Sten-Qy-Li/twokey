@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Sten-Qy-Li/twokey/internal/docker"
+	"github.com/Sten-Qy-Li/twokey/internal/gitx"
 	"github.com/Sten-Qy-Li/twokey/internal/runner"
 	"github.com/Sten-Qy-Li/twokey/internal/schema"
 	"github.com/Sten-Qy-Li/twokey/internal/state"
@@ -46,7 +47,8 @@ func (e *engine) runAgent(ctx context.Context, r *state.Round, s *state.Step, st
 		}
 	}
 	req := runner.Request{Agent: s.Agent, Name: s.Name, Step: step, Round: r.N, Prompt: prompt,
-		RepoDir: e.o.Root, ScratchDir: scratch, Commit: r.Commit, Resume: resume}
+		RepoDir: e.o.Root, ScratchDir: scratch, Commit: r.Commit, Resume: resume,
+		Env: gitx.PushBlockEnv(os.Getenv)} // agents can't push (D62)
 	head := e.headOr(ctx) // a fix that hit a limit may rerun only if HEAD is still here
 	fail := func(problem, reason string) outcome {
 		e.update(func() { s.Status, s.Error = state.Failed, strings.ReplaceAll(problem, "\n", "; ") })

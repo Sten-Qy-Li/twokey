@@ -206,7 +206,7 @@ func (x *Real) codex(ctx context.Context, req Request) Result {
 	}
 	events, stderr := req.OutBase+".events.jsonl", req.OutBase+".stderr.log"
 	tr := x.Launch(ctx, proc.TreeCmd{Dir: req.RepoDir, Name: x.codexPath(), Args: CodexArgs(c, p),
-		Stdin: req.Prompt, Stdout: events, Stderr: stderr})
+		Stdin: req.Prompt, Stdout: events, Stderr: stderr, Env: req.Env})
 
 	var ev CodexEvents
 	if f, err := os.Open(events); err == nil {

@@ -166,9 +166,9 @@ func TestUpstreamDivergedIsOnlyReported(t *testing.T) {
 }
 
 // The whole story: a teammate's merge request lands on main (protected,
-// and the upstream) while the fix runs. twokey can't tell it from an
-// agent's push, so it asks. Round 2 then audits the fix as it is, with a
-// warning that the branch and main have diverged.
+// and the upstream) while the fix runs. Agents can't push (D62), so it was
+// someone else: twokey notes it and goes on. Round 2 then audits the fix
+// as it is, with a warning that the branch and main have diverged.
 func TestUpstreamMovesDuringARound(t *testing.T) {
 	w := newWorld(t)
 	w.cfg.Project.Upstream = "main"
@@ -178,28 +178,23 @@ func TestUpstreamMovesDuringARound(t *testing.T) {
 	w.file(1, "fix.json", fixAnswer("R1-M-01"))
 	w.cleanRound(2)
 
-	w.expect(w.start(""), engine.ExitPaused)
+	w.expect(w.start(""), engine.ExitDone)
 	st := w.state()
-	if st.Pause.Reason != "PAUSE_PROTECTED_MOVED" || st.Pause.Protected["main"] != w.remoteSHA("main") {
-		t.Fatalf("pause %+v", st.Pause)
+	if st.Status != state.Converged || len(st.Rounds) != 2 || !st.Rounds[0].Pushed || st.Rounds[1].Commit != w.head() ||
+		w.remoteSHA("feature") != w.head() || st.ProtectedSHAs["main"] != w.remoteSHA("main") {
+		t.Fatalf("status %s, %d rounds", st.Status, len(st.Rounds))
 	}
-	w.outHas("Merge branch 'teammate' into 'main' (twokey test)")
-	w.outHas("twokey can't tell a teammate's merge from an agent's push")
-
-	w.expect(w.resume("y\n", 0), engine.ExitDone)
-	st = w.state()
-	if st.Status != state.Converged || len(st.Rounds) != 2 || !st.Rounds[0].Pushed || st.Rounds[1].Commit != w.head() || w.remoteSHA("feature") != w.head() {
-		t.Fatalf("after the confirmation: status %s, %d rounds", st.Status, len(st.Rounds))
-	}
+	w.outHas("main moved on origin during round 1's fix step")
 	w.outHas("[WARN]  origin/feature and origin/main have diverged")
-	if want := "Round 1: you confirmed that main moved on origin during round 1's fix step"; !strings.Contains(w.report(), want) {
+	if want := "Round 1: main moved on origin during round 1's fix step"; !strings.Contains(w.report(), want) ||
+		!strings.Contains(w.report(), "Agents can't push, so it was someone else, for example a teammate's merge.") {
 		t.Errorf("report lacks %q:\n%s", want, w.report())
 	}
 }
 
-// A protected branch moves during an agent step, with upstream off:
-// twokey pauses until the owner confirms, then publishes the step's
-// answer and goes on.
+// A protected branch moves during an agent step, with upstream off: it is
+// someone else's change, so the step's answer is published and the run
+// goes on.
 func TestProtectedBranchMovedBySomeoneElse(t *testing.T) {
 	w := newWorld(t)
 	w.oneFinding(1, "")
@@ -208,41 +203,35 @@ func TestProtectedBranchMovedBySomeoneElse(t *testing.T) {
 	w.cleanRound(2)
 	oldMain := w.remoteSHA("main")
 
-	w.expect(w.start(""), engine.ExitPaused)
+	w.expect(w.start(""), engine.ExitDone)
 	newMain := w.remoteSHA("main")
-	if st := w.state(); st.Pause.Reason != "PAUSE_PROTECTED_MOVED" || st.Rounds[0].IsDone(state.Convergence) {
-		t.Fatalf("pause %+v", st.Pause)
-	}
-	w.outHas(fmt.Sprintf("- main: %s -> %s", oldMain[:12], newMain[:12]))
-	w.outHas("Teammate's merge (twokey test)")
-
-	w.expect(w.resume("\n", 0), engine.ExitPaused) // only y confirms
-	w.outHas("Still paused: the protected branch change is not confirmed.")
-
-	w.expect(w.resume("y\n", 0), engine.ExitDone)
 	st := w.state()
 	if st.Status != state.Converged || len(st.Rounds) != 2 || st.ProtectedSHAs["main"] != newMain {
 		t.Errorf("status %s, %d rounds, main %s", st.Status, len(st.Rounds), st.ProtectedSHAs["main"])
 	}
+	w.outHas(fmt.Sprintf("main moved on origin during round 1's convergence step (%s -> %s).", oldMain[:12], newMain[:12]))
 	if !strings.Contains(w.read("local-only_logs.md"), "step `convergence`") {
 		t.Error("the convergence answer was not logged")
 	}
 }
 
-// An agent pushes the branch while a protected branch moves: both are
-// listed, under PAUSE_INVARIANT, and resume asks about the protected one.
+// An agent gets past the push block while a protected branch moves: the
+// move is no longer clearly someone else's, so it is listed with the
+// other problems under PAUSE_INVARIANT.
 func TestProtectedMoveAndAgentPush(t *testing.T) {
 	w := newWorld(t)
 	w.oneFinding(1, "")
-	w.actions(1, "fix", runner.Actions{Write: map[string]string{"fixed.txt": "x"}, Commit: "Fix", Push: true,
+	w.actions(1, "fix", runner.Actions{Config: map[string]string{"remote.origin.pushurl": w.repo.Remote},
+		Write: map[string]string{"fixed.txt": "x"}, Commit: "Fix", Push: true,
 		TeammatePush: "Teammate's merge", TeammateBranch: "main"})
 	w.file(1, "fix.json", fixAnswer("R1-M-01"))
 	w.expect(w.start(""), engine.ExitPaused)
-	if st := w.state(); st.Pause.Reason != "PAUSE_INVARIANT" || st.Pause.Protected["main"] == "" {
+	if st := w.state(); st.Pause.Reason != "PAUSE_INVARIANT" {
 		t.Errorf("pause %+v", st.Pause)
 	}
 	w.outHas("Branch feature changed on the remote")
-	w.outHas("A protected branch moved on origin during round 1's fix step")
+	w.outHas("A protected branch moved during the step too:")
+	w.outHas("Teammate's merge (twokey test)")
 }
 
 // A run that paused at the check after convergence publishes that answer

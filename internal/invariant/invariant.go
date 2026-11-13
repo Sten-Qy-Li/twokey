@@ -27,6 +27,9 @@ type Snapshot struct {
 	LogHash  string            // SHA-256 of the log file
 	Remote   map[string]string // branch -> SHA on the remote ("" if missing)
 	RunFiles map[string]string // twokey's run folder: relative path -> SHA-256
+	// PushConfig lists git settings that would get a push past the agents'
+	// push block (D62); it must stay empty.
+	PushConfig string
 }
 
 // Taker takes snapshots of one repository.
@@ -67,6 +70,11 @@ func (t Taker) Take(ctx context.Context) (Snapshot, error) {
 	if s.RunFiles, err = manifest(t.RunDir); err != nil {
 		return s, err
 	}
+	bypass, err := t.Repo.PushBypasses(ctx)
+	if err != nil {
+		return s, err
+	}
+	s.PushConfig = strings.Join(bypass, "\n")
 	if t.Skip != nil {
 		for rel := range s.RunFiles {
 			if t.Skip(rel) {
@@ -112,6 +120,9 @@ func common(before, after Snapshot, newFiles []string) []string {
 	}
 	if after.LogHash != before.LogHash {
 		p = append(p, "The log file changed.")
+	}
+	if after.PushConfig != before.PushConfig {
+		p = append(p, "git's push settings changed, so an agent may have tried to get past twokey's push block. They are now:"+indent(after.PushConfig))
 	}
 	for _, b := range sortedKeys(before.Remote) {
 		if after.Remote[b] != before.Remote[b] {

@@ -130,6 +130,7 @@ func TestHealthyProject(t *testing.T) {
 		`[OK]    Claude permission mode "auto" is supported`,
 		"[OK]    On branch feature",
 		"[OK]    The working tree is clean",
+		"[OK]    No pushurl or pushInsteadOf setting gets past twokey's push block for agents",
 		"[OK]    HEAD matches origin/feature after git fetch",
 		"[OK]    Protected branches on origin: main",
 		"[OK]    Codex's sandbox can run git ls-remote",
@@ -164,6 +165,14 @@ func TestProblems(t *testing.T) {
 			setup: func(t *testing.T, p *project) { p.WriteFile(t, "notes.txt", "x") },
 			want:  "[FAIL]  The working tree has 1 changed file that git doesn't ignore:",
 			code:  1,
+		},
+		{
+			name: "a pushurl would get agents past the push block",
+			setup: func(t *testing.T, p *project) {
+				testutil.Git(t, p.Dir, "config", "remote.origin.pushurl", "git@example.invalid:x.git")
+			},
+			want: "[FAIL]  These git settings would let agents push past twokey's block: remote.origin.pushurl git@example.invalid:x.git",
+			code: 1,
 		},
 		{
 			name: "ahead of origin",

@@ -18,6 +18,7 @@ const (
 	PauseAdjudicate Action = "PAUSE_ADJUDICATE"
 	PauseDecision   Action = "PAUSE_DECISION"
 	PauseRecurring  Action = "PAUSE_RECURRING"
+	PauseSkipped    Action = "PAUSE_SKIPPED" // only skipped findings are left (D61)
 	StopConverged   Action = "STOP_CONVERGED"
 	StopMaxRounds   Action = "STOP_MAX_ROUNDS"
 	Fix             Action = "FIX"
@@ -50,6 +51,10 @@ type Input struct {
 	Decisions map[string]string
 	// Lineage holds how often each merged finding has recurred (D21).
 	Lineage map[string]int
+	// Skipped holds the findings autopilot skipped this round because they
+	// need the owner (D61): they aren't fixed, and they keep the round from
+	// converging.
+	Skipped map[string]bool
 }
 
 // Result is the gate's decision.
@@ -109,9 +114,14 @@ func Decide(in Input) Result {
 		}
 	}
 
-	var needDecision, recurring []string
+	var needDecision, recurring, fixable, waiting []string
 	for _, id := range confirmed {
 		m := byID[id]
+		if in.Skipped[id] {
+			waiting = append(waiting, id)
+			continue
+		}
+		fixable = append(fixable, id)
 		if m.Kind == "needs_decision" && in.Decisions[id] == "" {
 			needDecision = append(needDecision, id)
 		}
@@ -131,10 +141,12 @@ func Decide(in Input) Result {
 		res.Action, res.IDs = PauseRecurring, recurring
 	case len(confirmed) == 0:
 		res.Action = StopConverged
+	case len(fixable) == 0:
+		res.Action, res.IDs = PauseSkipped, waiting
 	case in.Round >= in.MaxRounds && !in.SingleRound:
 		res.Action, res.IDs = StopMaxRounds, confirmed
 	default:
-		res.Action, res.IDs = Fix, confirmed
+		res.Action, res.IDs = Fix, fixable
 		if in.FixP3 {
 			res.IDs = append(res.IDs, p3Fixes(in.Convergence, dropped)...)
 		}
